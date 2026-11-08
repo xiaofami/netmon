@@ -42,6 +42,18 @@ python3 build/build-apk.py --bin-dir build/out --arch <arch_packages> --sdk /pat
 
 整个过程不需要路由器在线，也不需要 OpenWrt 的完整构建树。
 
+## 这些包是怎么来的
+
+三个架构都由 GitHub Actions 在 ImmortalWrt 官方 SDK 的交叉工具链上编出来，
+不是手工上传的：见 [`.github/workflows/build.yml`](.github/workflows/build.yml)。
+
+编译走 `build/cross-build.sh`（只编二进制）→ `build/build-apk.py`（打包），
+和本地从路由器取二进制的那条路用的是**同一个打包器**，所以安装脚本、
+配置保留、`apk-new` 清理这些行为完全一致。
+
+x86_64 包已实测装进一台 ImmortalWrt 25.12.2 x86 软路由：采集进程、
+`netmon-report status`、CGI 与面板全部正常。
+
 ## 校验
 
 `SHA256SUMS` 一并附上：
