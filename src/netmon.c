@@ -196,8 +196,7 @@ static void load_local_nets(void)
 {
     struct ifaddrs *ifa, *p;
     if (getifaddrs(&ifa) != 0) {
-        fprintf(stderr, "netmon: getifaddrs 失败: %s（LAN 内互访不过滤）\n",
-                strerror(errno));
+        logmsg("getifaddrs 失败: %s（LAN 内互访不过滤）", strerror(errno));
         return;
     }
     for (p = ifa; p && g_lnet_n < MAX_LOCAL_NET; p = p->ifa_next) {
@@ -222,7 +221,7 @@ static void load_local_nets(void)
         /* 掩码转前缀长度：255.255.255.0 → 24 */
         int bits = 0;
         for (uint32_t m = g_lnet[i].mask; m; m <<= 1) bits++;
-        fprintf(stderr, "netmon: 本地网段 %s/%d（内部互访不计流量）\n", ip, bits);
+        logmsg("本地网段 %s/%d（内部互访不计流量）", ip, bits);
     }
 }
 
