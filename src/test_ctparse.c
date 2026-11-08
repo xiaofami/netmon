@@ -20,9 +20,9 @@ static void t_tcp(void)
 {
     printf("\n[tcp 双方向]\n");
     char line[] = "ipv4     2 tcp      6 97 TIME_WAIT "
-                  "src=203.0.113.10 dst=59.82.113.219 sport=34458 dport=80 "
+                  "src=203.0.113.45 dst=59.82.113.219 sport=34458 dport=80 "
                   "packets=5 bytes=972 "
-                  "src=59.82.113.219 dst=203.0.113.10 sport=80 dport=34458 "
+                  "src=59.82.113.219 dst=203.0.113.45 sport=80 dport=34458 "
                   "packets=5 bytes=1396 [ASSURED] mark=0 zone=0 use=2";
     ct_rec_t r;
     int rc = ct_parse_line(line, &r);
@@ -33,7 +33,7 @@ static void t_tcp(void)
     char a[64], b[64];
     inet_ntop(AF_INET, r.key.src, a, sizeof(a));
     inet_ntop(AF_INET, r.key.dst, b, sizeof(b));
-    CHECK(strcmp(a, "203.0.113.10") == 0, "src=%s", a);
+    CHECK(strcmp(a, "203.0.113.45") == 0, "src=%s", a);
     CHECK(strcmp(b, "59.82.113.219") == 0, "dst=%s", b);
     CHECK(r.key.sport == 34458, "sport=%u", r.key.sport);
     CHECK(r.key.dport == 80, "dport=%u", r.key.dport);
@@ -65,7 +65,7 @@ static void t_icmp(void)
     char line[] = "ipv4     2 icmp     1 16 "
                   "src=192.168.1.245 dst=8.8.8.8 type=8 code=0 id=25337 "
                   "packets=1 bytes=84 "
-                  "src=8.8.8.8 dst=203.0.113.10 type=0 code=0 id=25337 "
+                  "src=8.8.8.8 dst=203.0.113.45 type=0 code=0 id=25337 "
                   "packets=1 bytes=84 mark=0 zone=0 use=2";
     ct_rec_t r;
     CHECK(ct_parse_line(line, &r) == 1, "解析成功");
@@ -113,7 +113,7 @@ static void t_mark(void)
     char line[] = "ipv4     2 tcp      6 7440 ESTABLISHED "
                   "src=192.168.1.50 dst=104.16.0.1 sport=51000 dport=443 "
                   "packets=100 bytes=50000 "
-                  "src=104.16.0.1 dst=203.0.113.10 sport=443 dport=51000 "
+                  "src=104.16.0.1 dst=203.0.113.45 sport=443 dport=51000 "
                   "packets=200 bytes=900000 [ASSURED] mark=1 zone=0 use=2";
     ct_rec_t r;
     CHECK(ct_parse_line(line, &r) == 1, "解析成功");

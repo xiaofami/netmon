@@ -5,7 +5,7 @@
 已验证环境：
 - ImmortalWrt 25.12 / x86-64 / musl
 - 路由器地址 `192.168.1.1`
-- WAN 接口 `pppoe-wan`，IP `203.0.113.10`（PPPoE 动态，会变）
+- WAN 接口 `pppoe-wan`，IP `203.0.113.45`（PPPoE 动态，会变）
 
 ---
 
@@ -192,8 +192,8 @@ ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | tail -20'
 
 正常启动日志：
 ```
-netmon: started: db=/opt/netmon/data/netmon.db interval=5s retain=30d wan=203.0.113.10
-探测绕过: interface=203.0.113.10
+netmon: started: db=/opt/netmon/data/netmon.db interval=5s retain=30d wan=203.0.113.45
+探测绕过: interface=203.0.113.45
 netmon 启动: db=/opt/netmon/data/netmon.db 采样=5000ms 保留=30天
 ```
 

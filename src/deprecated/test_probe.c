@@ -69,7 +69,7 @@ static void cb(const probe_target_t *t, const ping_result_t *r, void *ud)
 
 int main(int argc, char **argv)
 {
-    /* 允许命令行传 WAN 源 IP 用于绕过代理：./test_probe 203.0.113.10 */
+    /* 允许命令行传 WAN 源 IP 用于绕过代理：./test_probe 203.0.113.45 */
     if (argc > 1) {
         probe_set_bypass_iface(argv[1]);
         printf("绕过代理：interface=%s mark=%u\n\n", argv[1], probe_get_bypass_mark());

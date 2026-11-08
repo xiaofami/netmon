@@ -74,7 +74,7 @@ netmon-report status
 ```bash
 # 手动验证测速源
 ssh -F ~/.ssh/netmon.conf r '
-  curl -s -o /dev/null --interface 203.0.113.10 --max-time 12 \
+  curl -s -o /dev/null --interface 203.0.113.45 --max-time 12 \
     -w "code=%{http_code} speed=%{speed_download}\n" \
     https://proof.ovh.net/files/1Mb.dat'
 ```
@@ -88,7 +88,7 @@ ssh -F ~/.ssh/netmon.conf r '
 
 ```bash
 ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep 探测绕过'
-# 应输出：探测绕过: interface=203.0.113.10
+# 应输出：探测绕过: interface=203.0.113.45
 ```
 
 如果 WAN IP 变了（PPPoE 重拨），需要重启服务让它重新探测：
@@ -104,7 +104,7 @@ ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep 探测绕过'
 ssh -F ~/.ssh/netmon.conf r '
   ping -c 3 -W 2 <目标IP>
   # 再试 TCP
-  curl -s -o /dev/null -m 5 -w "%{http_code}\n" --interface 203.0.113.10 https://<目标IP>/'
+  curl -s -o /dev/null -m 5 -w "%{http_code}\n" --interface 203.0.113.45 https://<目标IP>/'
 ```
 
 - ICMP 全丢 + TCP 通 → 禁 ping 主机，代码里会自动降级，不用管

@@ -33,7 +33,7 @@ static void gen(int i)
             "ipv4     2 tcp      6 7440 ESTABLISHED "
             "src=192.168.1.%d dst=104.16.%d.%d sport=%u dport=443 "
             "packets=100 bytes=50000 "
-            "src=104.16.%d.%d dst=203.0.113.10 sport=443 dport=%u "
+            "src=104.16.%d.%d dst=203.0.113.45 sport=443 dport=%u "
             "packets=200 bytes=900000 [ASSURED] mark=0 zone=0 use=2",
             (a % 250) + 2, b, c, 1024 + (i % 60000),
             b, c, 1024 + (i % 60000));
@@ -57,7 +57,7 @@ static void gen(int i)
             "ipv4     2 icmp     1 16 "
             "src=192.168.1.%d dst=1.1.1.1 type=8 code=0 id=%d "
             "packets=1 bytes=84 "
-            "src=1.1.1.1 dst=203.0.113.10 type=0 code=0 id=%d "
+            "src=1.1.1.1 dst=203.0.113.45 type=0 code=0 id=%d "
             "packets=1 bytes=84 mark=0 zone=0 use=2",
             (a % 250) + 2, i % 65535, i % 65535);
     }

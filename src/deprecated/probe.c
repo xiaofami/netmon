@@ -37,7 +37,7 @@ static double now_ms(void)
 /* ---------------- 绕过代理 ---------------- */
 
 static uint32_t g_bypass_mark = 100;   /* homeproxy 默认放行标记 */
-static char     g_bypass_if[64] = "";  /* 绑定源地址，如 "203.0.113.10" */
+static char     g_bypass_if[64] = "";  /* 绑定源地址，如 "203.0.113.45" */
 
 void probe_set_bypass_mark(uint32_t mark) { g_bypass_mark = mark; }
 uint32_t probe_get_bypass_mark(void) { return g_bypass_mark; }

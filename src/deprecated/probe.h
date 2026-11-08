@@ -52,7 +52,7 @@ uint32_t probe_get_bypass_mark(void);
  *
  * curl 不支持 SO_MARK，但可以用 --interface 绑定 WAN 的源 IP。
  * 绑定后连接不经过 TUN 的 iifname 匹配，直接走物理网卡出网。
- * 实测 --interface 203.0.113.10 把 connect 从 201ms 降到 2ms，
+ * 实测 --interface 203.0.113.45 把 connect 从 201ms 降到 2ms，
  * 确认生效。传 NULL 或空串表示不绑定。
  */
 void probe_set_bypass_iface(const char *ip_or_dev);

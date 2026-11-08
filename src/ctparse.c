@@ -4,8 +4,8 @@
  * 这一行是全部数据的入口，必须严格正确，所以单独成文件并配单元测试。
  *
  * 真实行样例：
- *   ipv4 2 tcp 6 97 TIME_WAIT src=203.0.113.10 dst=59.82.113.219 sport=34458
- *   dport=80 packets=5 bytes=972 src=59.82.113.219 dst=203.0.113.10 sport=80
+ *   ipv4 2 tcp 6 97 TIME_WAIT src=203.0.113.45 dst=59.82.113.219 sport=34458
+ *   dport=80 packets=5 bytes=972 src=59.82.113.219 dst=203.0.113.45 sport=80
  *   dport=34458 packets=5 bytes=1396 [ASSURED] mark=0 zone=0 use=2
  *
  * 关键点：
