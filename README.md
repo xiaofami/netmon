@@ -12,7 +12,7 @@ netmon 想回答的是更难的那类问题：
 
 ![总览](screenshots/overview.png)
 
-> 截图与 [在线演示](https://xiaofami.github.io/netmon/demo/) 中的数据全部经过脱敏：
+> 截图与 [在线演示](https://tccmu.com/netmon/demo/) 中的数据全部经过脱敏：
 > 设备名、MAC、内网地址、域名都是生成的示例值，不对应任何真实环境。
 
 ---
@@ -221,8 +221,9 @@ www/            前端单文件 + CGI 脚本
 package/        OpenWrt 包定义（netmon / luci-app-netmon）
 build/          开发工具：离线渲染自检、脱敏演示页生成、apk 打包
 docs/           设计、部署、性能、打包、UX 等完整记录
+                （docs/demo/ 是在线演示页，由 GitHub Pages 发布）
 screenshots/    README 用图（由脱敏数据渲染）
-demo/           在线演示页（GitHub Pages 源）
+
 ```
 
 几个值得一提的开发工具：
