@@ -185,11 +185,11 @@ static void t_family_isolation(void)
     printf("[8] v4/v6 隔离\n");
     dnsmap_t *m = dnsmap_new(1024);
 
-    dnsmap_feed(m, "dnsmasq[1]: reply v4only.com is 10.1.2.3", 100);
+    dnsmap_feed(m, "dnsmasq[1]: reply v4only.com is 192.0.2.10", 100);
     dnsmap_feed(m, "dnsmasq[1]: reply v6only.com is ::1", 101);
 
     uint8_t ip4[16], ip6[16];
-    to_ip4("10.1.2.3", ip4);
+    to_ip4("192.0.2.10", ip4);
     to_ip6("::1", ip6);
 
     const char *a = dnsmap_lookup(m, 4, ip4);

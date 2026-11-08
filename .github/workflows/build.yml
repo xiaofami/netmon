@@ -47,6 +47,11 @@ jobs:
       - name: 前端静态检查
         run: python3 build/check-web.py
 
+      - name: 隐私自检（真实内网地址 / 主机名）
+        # 项目本身是「看别人上网」的工具，仓库里不该出现自己的网络信息。
+        # 之前踩过两次：字节比较形式的硬编码网段、release note 里贴真实 conntrack
+        run: python3 build/check-leak.py
+
       - name: 演示页脱敏自检
         # 万一有人把真实数据提交进 www/demo.html，这一步会红
         run: python3 build/make-demo.py --check
