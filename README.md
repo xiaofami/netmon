@@ -250,9 +250,15 @@ config netmon 'main'
 和真故障：
 
 ```sh
-logread -e netmon            # 全部
-logread -e netmon -l err     # 只看故障
+logread -e netmon                          # 全部
+logread -e netmon | grep 'daemon\.err'     # 只看故障
+logread -e netmon | grep -v 'daemon\.info' # 排除正常信息
 ```
+
+> **busybox 的 `logread` 没有按级别过滤的选项。** `-l` 是「只取最后 N 条」，
+> 不是日志级别 —— 写成 `logread -l err` 会被 `atoi("err")=0` 静默解释成
+> 「不限条数」，照样输出全部。只能靠输出里的 `daemon.err` 字样用 grep 过滤。
+> 也没有 `-c` 清空选项，缓冲区是环形的，靠新日志自然覆盖。
 
 | 级别 | 内容 |
 |---|---|

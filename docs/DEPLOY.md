@@ -328,7 +328,7 @@ ssh -F ~/.ssh/netmon.conf r '
 
 **采集与存储**
 - [ ] `netmon-report status` 能看到数据
-- [ ] `logread -e netmon` 里 `stat:` 行的"采样"耗时 < 100µs
+- [ ] `stat:` 行的"采样"耗时 < 100µs（debug 级，需 `loglevel=1`）
 - [ ] `/etc/init.d/netmon status` 是 `running`
 - [ ] 重启路由器后服务自动起来（`enable` 已生效）
 

@@ -442,7 +442,7 @@ NETMON_DNS_DEBUG=1 NETMON_DNS_NO_BPF=1 netmon -d /tmp/t.db
 # 收所有网卡（判断报文是不是走了别的接口）
 netmon -d /tmp/t.db --sniff-if any
 
-# 一行看关键指标
+# 一行看关键指标（stat: 是 debug 级，需 loglevel=1 并重启）
 logread -e netmon | grep "stat:" | tail -1
 # → dns q=181 r=204 未配对=23(89%) 待处理=0 内核丢帧=0
 ```

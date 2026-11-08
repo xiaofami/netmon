@@ -32,6 +32,7 @@ ssh -F ~/.ssh/netmon.conf r 'du -sh /opt/netmon/data/; df -h /overlay'
 ### 性能
 
 ```bash
+# stat: 是 debug 级，需先设 loglevel=1 并重启（见「日志级别」一节）
 ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep "stat:" | tail -5'
 ```
 
@@ -294,17 +295,38 @@ DNS 分流和解析**完全不受影响**。
 # 实时
 ssh -F ~/.ssh/netmon.conf r 'logread -f -e netmon'
 
-# 只看探测
-ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep probe'
-
-# 只看统计
+# 只看统计（需要 loglevel=1，否则 debug 级不输出，见下）
 ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep "stat:"'
 
 # 只看错误
-ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep -iE "fail|error"'
+ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep "daemon\.err"'
 ```
 
-日志级别在 UCI 里调（`loglevel`: 0 静默 / 1 正常 / 2 详细）。
-默认 1，只记启动、探测结果、每分钟统计、错误。
+### 日志级别
 
-日志走 syslog（`logread`），不写文件 —— 避免在 flash 上频繁写。
+netmon 直接写 syslog（`LOG_DAEMON`），级别由代码决定，不写文件 ——
+避免在 flash 上频繁写：
+
+| 级别 | 内容 | 默认输出 |
+|---|---|---|
+| `daemon.info` | 启停、本地网段识别、规则同步 | 是 |
+| `daemon.warning` | 非致命降级（嗅探起不来、homeproxy 没装） | 是 |
+| `daemon.err` | 真故障（库打不开、建表失败、刷盘失败） | 是 |
+| `daemon.debug` | 每秒采样明细、每分钟心跳（`stat:`） | **否** |
+
+`stat:` 心跳默认不输出：每分钟一条、一天 1440 条，会把 logd 那点环形缓冲里
+别的服务的日志挤掉。要观察时设 UCI `loglevel` 为 `1`（等价命令行 `-v`）：
+
+```bash
+uci set netmon.main.loglevel=1 && uci commit netmon && /etc/init.d/netmon restart
+```
+
+要看的时候记得改回 0，否则长期刷屏。
+
+### busybox logread 的两个坑
+
+1. **没有按级别过滤的选项**。`-l` 是「只取最后 N 条」，不是级别。
+   `logread -l err` 会被 `atoi("err")=0` 静默解释成「不限条数」，照样输出全部 ——
+   不报错，比报错更容易误判。只能用 `grep 'daemon\.err'`。
+2. **没有 `-c` 清空选项**。缓冲区是环形的，靠新日志覆盖。
+   排查「是不是刚重启过」要看 PID 或时间戳，不要以为缓冲区里没有旧日志。
