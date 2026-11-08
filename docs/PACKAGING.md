@@ -255,8 +255,8 @@ AdGuard Home 自身是可配置的 DNS 过滤器，LuCI 包自然能管拦截规
 
 | 文件 | 架构 | 依赖（全部来自官方 apk 仓库） |
 |---|---|---|
-| `netmon-1.0.0-r1.apk` | x86_64 | `libc`, `ip-full`, `uhttpd`, `kmod-nf-conntrack` |
-| `luci-app-netmon-1.0.0-r1.apk` | noarch | `luci-base`, `luci-compat`, `netmon` |
+| `netmon-1.0.5-x86_64.apk` | x86_64 | `libc`, `ip-full`, `uhttpd`, `kmod-nf-conntrack` |
+| `luci-app-netmon-1.0.5-noarch.apk` | noarch | `luci-base`, `luci-compat`, `netmon` |
 
 sqlite3 以 amalgamation **静态链接**进二进制（`ldd` 只有 musl libc + libgcc），
 所以不再需要 `libsqlite3-0`；主动探测停用后也不再需要 `curl`。
@@ -285,7 +285,7 @@ SDK 下载：`releases/25.12.2/targets/x86/64/immortalwrt-sdk-25.12.2-x86-64_gcc
 ### 安装 / 卸载
 
 ```sh
-apk add --allow-untrusted netmon-1.0.0-r1.apk luci-app-netmon-1.0.0-r1.apk
+apk add --allow-untrusted netmon-1.0.5-x86_64.apk luci-app-netmon-1.0.5-noarch.apk
 apk del netmon luci-app-netmon
 ```
 

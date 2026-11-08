@@ -3,6 +3,9 @@
 OpenWrt / ImmortalWrt 上的**被动**网络监控。读 `nf_conntrack` + 旁路嗅探 udp/53，
 不参与转发、不发探测包、不改防火墙 —— 装错了也不会断网。
 
+> **本次是 1.0.5。** 之前的 `1.0.0` 是最早的构建，有已知问题（LAN 网段写死），
+> 请用本页的最新包。版本号从 1.0.1 起按语义化递增，不再在 1.0.0 上叠 `-rN`。
+
 ## 安装包
 
 每个架构一个 `netmon-*.apk`，外加一个所有架构通用的 `luci-app-netmon-*.apk`。
@@ -42,7 +45,7 @@ python3 build/build-apk.py --bin-dir build/out --arch <arch_packages> --sdk /pat
 
 整个过程不需要路由器在线，也不需要 OpenWrt 的完整构建树。
 
-## 1.0.0-r5 修了什么
+## 1.0.5：日志改走 syslog（本次）
 
 日志之前全部走 stderr，而 procd 把它当成一个流交给 logd，没有优先级的原始行
 一律标成 `daemon.err`。于是 `logread` 里连「本地网段 192.168.1.0/24」这种正常
@@ -63,7 +66,7 @@ python3 build/build-apk.py --bin-dir build/out --arch <arch_packages> --sdk /pat
 前台手跑（stderr 是终端）时日志同时打到屏幕；被 procd 接管后只走 syslog，
 同一条不会记两遍。
 
-## 1.0.0-r3 修了什么
+## 1.0.1：LAN 网段动态识别
 
 上一版（r2）里 `ignore_conn()` 用字节比较写死了两个 LAN 网段来判断「同网段互访」。
 在开发那台机器上没问题，但换个网段部署就会出问题：设备之间互访、容器网络
