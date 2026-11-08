@@ -44,6 +44,7 @@
 #include <time.h>
 #include <math.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -172,13 +173,72 @@ static void logmsg(const char *fmt, ...)
  *
  * 过滤掉三类噪音（实测中它们占了相当比例，且完全不含用户上网信息）：
  *   1. 回环：127.0.0.0/8、::1 —— 本机进程间通信
- *   2. 局域网内部：192.168.1.0/24（br-lan）、172.20.0.0/16（podman）
+ *   2. 局域网内部：源和目的都在**本机有地址的同一个网段**
  *      —— 这些是设备之间/容器之间的流量，不是"上网"
  *   3. 广播/组播：.255、224.0.0.0/4
  *
- * 注意不能简单地把所有 10.x 都过滤掉：PPPoE 拿到的 WAN IP
- * 也是 10.40.x.x，那是真实出网流量，必须留。
+ * 第 2 条不写死网段：LAN 可能是 192.168.1.0/24，也可能是 10.x、172.16.x，
+ * 还可能有多个 VLAN、docker/podman 网桥。启动时枚举本机所有接口地址与掩码，
+ * 记成若干网段，运行时按掩码比对。这样换网段不需要改代码。
+ *
+ * 但不能反过来「把私有地址全过滤掉」：PPPoE 拿到的 WAN IP 往往也是 10.x，
+ * 那是真实出网流量，必须留。判据是「本机在该网段有地址」而不是「是私有地址」。
  */
+#define MAX_LOCAL_NET 16
+
+typedef struct { uint32_t net; uint32_t mask; } local_net_t;
+
+static local_net_t g_lnet[MAX_LOCAL_NET];
+static int         g_lnet_n;
+
+/* 把本机所有接口的 IPv4 地址折算成 (network, mask)，忽略点对点与 /32。 */
+static void load_local_nets(void)
+{
+    struct ifaddrs *ifa, *p;
+    if (getifaddrs(&ifa) != 0) {
+        fprintf(stderr, "netmon: getifaddrs 失败: %s（LAN 内互访不过滤）\n",
+                strerror(errno));
+        return;
+    }
+    for (p = ifa; p && g_lnet_n < MAX_LOCAL_NET; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
+        if (!p->ifa_netmask) continue;
+
+        uint32_t a = ntohl(((struct sockaddr_in *)p->ifa_addr)->sin_addr.s_addr);
+        uint32_t m = ntohl(((struct sockaddr_in *)p->ifa_netmask)->sin_addr.s_addr);
+        if (m == 0 || m == 0xffffffffu) continue;   /* 无掩码 / 单主机路由 */
+        if (!strcmp(p->ifa_name, "lo")) continue;
+
+        g_lnet[g_lnet_n].net  = a & m;
+        g_lnet[g_lnet_n].mask = m;
+        g_lnet_n++;
+    }
+    freeifaddrs(ifa);
+
+    for (int i = 0; i < g_lnet_n; i++) {
+        char ip[INET_ADDRSTRLEN];
+        struct in_addr n = { htonl(g_lnet[i].net) };
+        inet_ntop(AF_INET, &n, ip, sizeof ip);
+        /* 掩码转前缀长度：255.255.255.0 → 24 */
+        int bits = 0;
+        for (uint32_t m = g_lnet[i].mask; m; m <<= 1) bits++;
+        fprintf(stderr, "netmon: 本地网段 %s/%d（内部互访不计流量）\n", ip, bits);
+    }
+}
+
+static int in_same_local_net(const uint8_t *s, const uint8_t *d)
+{
+    uint32_t a = ((uint32_t)s[0] << 24) | ((uint32_t)s[1] << 16) |
+                 ((uint32_t)s[2] << 8)  |  (uint32_t)s[3];
+    uint32_t b = ((uint32_t)d[0] << 24) | ((uint32_t)d[1] << 16) |
+                 ((uint32_t)d[2] << 8)  |  (uint32_t)d[3];
+    for (int i = 0; i < g_lnet_n; i++) {
+        uint32_t m = g_lnet[i].mask;
+        if ((a & m) == g_lnet[i].net && (b & m) == g_lnet[i].net) return 1;
+    }
+    return 0;
+}
+
 static int ignore_conn(const ct_key_t *k)
 {
     static const uint8_t V4MAP[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
@@ -198,12 +258,8 @@ static int ignore_conn(const ct_key_t *k)
     /* 组播 224.0.0.0/4 */
     if (d[0] >= 224 && d[0] <= 239) return 1;
 
-    /* LAN 内部互访：源和目的都在同一个 LAN 网段 */
-    if (s[0] == 10 && s[1] == 89 && s[2] == 2 &&
-        d[0] == 10 && d[1] == 89 && d[2] == 2) return 1;
-
-    /* podman 容器网络 */
-    if (s[0] == 10 && s[1] == 88 && d[0] == 10 && d[1] == 88) return 1;
+    /* 同网段互访（LAN 内设备之间、容器之间）：不是上网流量 */
+    if (in_same_local_net(s, d)) return 1;
 
     return 0;
 }
@@ -605,6 +661,9 @@ int main(int argc, char **argv)
             }
         }
     }
+
+    /* 本地网段表：同网段互访不记流量。必须在开始采样前准备好。 */
+    load_local_nets();
 
     /* 打开数据库 */
     char err[512];
