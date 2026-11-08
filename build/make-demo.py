@@ -430,16 +430,23 @@ def load_demo(path):
     return json.loads(m.group(1).replace("<\\/", "</"))
 
 
+# 残留检测规则。私网地址是硬红线；主机名按「形态」而不是按具体型号检测 ——
+# 默认固件给主机起什么名、消费设备爱用什么前缀，都是可枚举的模式，
+# 比维护一份设备清单更耐漏，也不需要在源码里罗列任何真实设备。
+RESIDUE_RULES = (
+    (r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b",                 "私网 10/8"),
+    (r"\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b",   "私网 172.16/12"),
+    (r"\b192\.168\.(?!1\.|2\.)\d{1,3}\.\d{1,3}\b",         "非示例 192.168 段"),
+    (r"\bDESKTOP-[A-Z0-9]{5,}\b",                                 "Windows 默认主机名"),
+    (r"\b(?:OPPO|NOVA|MIX|GEN8|UGOS|WTA|ILOCZ)-?[A-Z0-9]{2,}\b", "疑似厂商型号"),
+    (r"\b[A-Za-z][A-Za-z0-9]*-mibt[A-Z0-9]{4}\b",                 "小米设备后缀"),
+)
+
+
 def check(html):
-    """检查还有没有可疑残留（真实私网段、常见厂商主机名）。"""
+    """检查还有没有可疑残留。命中即返回非零退出码，用来卡住发布。"""
     bad = []
-    for pat, label in (
-        (r"\b10\.\d+\.\d+\.\d+\b", "私网 10/8"),
-        (r"\b172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b", "私网 172.16/12"),
-        (r"\b192\.168\.(?!\d+\.)", "私网 192.168"),
-        (r"(?i)\b(?:ShieldTV|DESKTOP-|OPPO-|NOVA\d|MIX2S|iQOO|GEN8|UGOS|WTA30|ys7|ezviz|roborock)\b",
-         "真实设备/服务名"),
-    ):
+    for pat, label in RESIDUE_RULES:
         for m in re.finditer(pat, html):
             bad.append("%s: %s" % (label, m.group(0)))
     return sorted(set(bad))
