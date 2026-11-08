@@ -143,6 +143,24 @@ logread -e netmon | grep stat:
 同网段互访不计流量这条，靠启动时枚举本机接口地址自动得出，**换网段不用改配置**。
 PPPoE 的 `/32` 点对点地址会被跳过 —— 它的 WAN IP 往往是 `10.x`，但那是真实出网流量。
 
+### 本机地址不算设备
+
+netmon 只把「别的机器」当设备。启动时会枚举本机所有接口地址（LAN、WAN/PPPoE、
+podman/docker 网桥、tun，含 IPv6），源地址命中就不采集。
+
+这条不是洁癖，是必须的：开了 tun 代理（sing-box / homeproxy）之后，同一份流量
+在 conntrack 里出现两次 —— 客户端发出一次、代理进程从 WAN 重新发出一次，
+两条字节数几乎相同。不排除的话域名总量翻倍，WAN 地址还会冒充成一台设备。
+
+> 1.0.6 之前入库的数据里这类重复还在。`netmon-report cleanup-self --dry-run`
+> 可以看清有多少，去掉 `--dry-run` 执行清理。它自己识别本机地址，不用手填 IP。
+
+日志里能看到识别结果：
+
+```sh
+logread -e netmon | grep -E '本机地址|本地网段'
+```
+
 ### 想省事
 
 装在**主路由**上信息最全，什么都不用配。如果主路由装不了（固件锁死、flash 不够），
@@ -280,6 +298,7 @@ netmon-report devices --since 24h          # 设备清单
 netmon-report client --ip 192.168.1.100    # 单台设备详情
 netmon-report detail --type qname --key example.com
 netmon-report dashboard --since 1d -j      # 前端用的完整 JSON
+netmon-report cleanup-self --dry-run       # 清历史里的本机地址记录（见下）
 ```
 
 全部支持 `--since 1h|24h|7d` 与 `-j`（JSON）。

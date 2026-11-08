@@ -238,11 +238,32 @@ static void loge(const char *fmt, ...)
  * 那是真实出网流量，必须留。判据是「本机在该网段有地址」而不是「是私有地址」。
  */
 #define MAX_LOCAL_NET 16
+#define MAX_SELF_IP   32
 
 typedef struct { uint32_t net; uint32_t mask; } local_net_t;
 
 static local_net_t g_lnet[MAX_LOCAL_NET];
 static int         g_lnet_n;
+
+/*
+ * 本机自己所有接口的 IPv4 地址（含 WAN、pppoe、tun、podman 网桥等）。
+ *
+ * 为什么要单独记：开了 tun 代理（sing-box / homeproxy）之后，同一份用户流量
+ * 在 conntrack 里会出现两次 ——
+ *     src=192.168.1.100 dst=<目标>   ← 客户端发出，被 tun 收走
+ *     src=203.0.113.10 dst=<目标>  ← 代理进程从 WAN 重新发出
+ * 两条的 bytes 几乎相同。不处理的话：域名总量翻倍，WAN 地址还会被当成一台
+ * 「未命名设备」和真设备并列出现在设备榜里。
+ *
+ * 判据取「src 是本机任何一个接口地址」：设备永远是别的机器，本机地址不可能是设备。
+ * 这条也顺带解决「路由器自己下载东西算成一台设备」的观感问题。
+ */
+static uint32_t g_self_ip[MAX_SELF_IP];
+static int      g_self_n;
+
+/* 同理记一份 IPv6。tun 代理同样会让 v6 流量出现两次。 */
+static uint8_t  g_self_v6[MAX_SELF_IP][16];
+static int      g_self_v6_n;
 
 /* 把本机所有接口的 IPv4 地址折算成 (network, mask)，忽略点对点与 /32。 */
 static void load_local_nets(void)
@@ -252,14 +273,36 @@ static void load_local_nets(void)
         logw("getifaddrs 失败: %s（LAN 内互访不过滤）", strerror(errno));
         return;
     }
-    for (p = ifa; p && g_lnet_n < MAX_LOCAL_NET; p = p->ifa_next) {
-        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
-        if (!p->ifa_netmask) continue;
+    for (p = ifa; p; p = p->ifa_next) {
+        if (!p->ifa_addr) continue;
 
+        /* --- IPv6：只收 global，跳过 link-local（fe80 每口一个，无意义）--- */
+        if (p->ifa_addr->sa_family == AF_INET6) {
+            const uint8_t *b = ((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr.s6_addr;
+            if (b[0] == 0xfe && b[1] == 0x80) continue;         /* link-local */
+            int is_lo6 = !memcmp(b, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\1", 16);
+            if (is_lo6) continue;
+            if (g_self_v6_n < MAX_SELF_IP)
+                memcpy(g_self_v6[g_self_v6_n++], b, 16);
+            continue;
+        }
+
+        if (p->ifa_addr->sa_family != AF_INET) continue;
         uint32_t a = ntohl(((struct sockaddr_in *)p->ifa_addr)->sin_addr.s_addr);
+
+        /* 本机地址全收（含 /32 的 PPPoE 对端、tun 的 /30），用于排除自身 */
+        if (a != 0x7f000001u && g_self_n < MAX_SELF_IP) {
+            int dup = 0;
+            for (int i = 0; i < g_self_n; i++)
+                if (g_self_ip[i] == a) { dup = 1; break; }
+            if (!dup) g_self_ip[g_self_n++] = a;
+        }
+
+        if (!p->ifa_netmask) continue;
         uint32_t m = ntohl(((struct sockaddr_in *)p->ifa_netmask)->sin_addr.s_addr);
         if (m == 0 || m == 0xffffffffu) continue;   /* 无掩码 / 单主机路由 */
         if (!strcmp(p->ifa_name, "lo")) continue;
+        if (g_lnet_n >= MAX_LOCAL_NET) continue;
 
         g_lnet[g_lnet_n].net  = a & m;
         g_lnet[g_lnet_n].mask = m;
@@ -276,6 +319,28 @@ static void load_local_nets(void)
         for (uint32_t m = g_lnet[i].mask; m; m <<= 1) bits++;
         logi("本地网段 %s/%d（内部互访不计流量）", ip, bits);
     }
+    for (int i = 0; i < g_self_n; i++) {
+        char ip[INET_ADDRSTRLEN];
+        struct in_addr a = { htonl(g_self_ip[i]) };
+        inet_ntop(AF_INET, &a, ip, sizeof ip);
+        logi("本机地址 %s（不作为设备统计）", ip);
+    }
+}
+
+static int is_self_ip(const uint8_t *p)
+{
+    uint32_t a = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                 ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+    for (int i = 0; i < g_self_n; i++)
+        if (g_self_ip[i] == a) return 1;
+    return 0;
+}
+
+static int is_self_ip6(const uint8_t *p)
+{
+    for (int i = 0; i < g_self_v6_n; i++)
+        if (!memcmp(g_self_v6[i], p, 16)) return 1;
+    return 0;
 }
 
 static int in_same_local_net(const uint8_t *s, const uint8_t *d)
@@ -295,7 +360,16 @@ static int ignore_conn(const ct_key_t *k)
 {
     static const uint8_t V4MAP[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
 
-    if (k->family != 4) return 0;    /* v6 暂时不细筛 */
+    /*
+     * IPv6 只做一件事：源是本机地址就丢弃（tun 代理导致的重复计量）。
+     * 网段内互访、广播、组播这些 v4 规则不套用到 v6：
+     *   - 运营商给的是 /64，同网段判断等于「全世界的 v6 都算内网」
+     *   - v6 没有广播，组播地址段也不同
+     */
+    if (k->family == 6)
+        return is_self_ip6(k->src);
+
+    if (k->family != 4) return 0;
 
     const uint8_t *s = k->src, *d = k->dst;
     if (memcmp(s, V4MAP, 12) == 0) s += 12;
@@ -312,6 +386,13 @@ static int ignore_conn(const ct_key_t *k)
 
     /* 同网段互访（LAN 内设备之间、容器之间）：不是上网流量 */
     if (in_same_local_net(s, d)) return 1;
+
+    /*
+     * 源是本机某个接口地址：不是「设备」在上网。
+     * 典型是 tun 代理把同一份流量从 WAN 重新发出（见 g_self_ip 注释），
+     * 不过滤就会让域名总量翻倍、WAN 地址冒充一台设备。
+     */
+    if (is_self_ip(s)) return 1;
 
     return 0;
 }

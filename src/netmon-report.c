@@ -33,6 +33,10 @@
 #include <math.h>
 #include <ctype.h>
 #include <sys/statvfs.h>
+#include <ifaddrs.h>
+#include <errno.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sqlite3.h>
 #include "hprules.h"
 #include "detail.h"
@@ -45,7 +49,7 @@ static const char *detail_name_cb(const char *ip, char *buf, size_t n);
 
 static sqlite3 *g_db;
 static int      g_json;
-static int      g_rw;      /* 1 = 可写（prune 用），默认只读 */
+static int      g_rw;      /* 1 = 可写（prune / cleanup-self 用），默认只读 */
 
 /* ---------------- 通用 ---------------- */
 
@@ -176,6 +180,11 @@ static void usage(void)
 "          数据库概况（行数、体积、时间覆盖范围）。\n"
 "  dashboard [--since 24h]\n"
 "          给 Web 前端用的一次性完整 JSON。\n"
+"  cleanup-self [--dry-run]\n"
+"          清理历史数据里「源地址是本机接口地址」的记录。\n"
+"          开了 tun 代理后同一份流量会被记两遍（客户端一次、本机 WAN 一次），\n"
+"          这些记录会让域名总量翻倍、WAN 地址冒充成一台设备。\n"
+"          1.0.6 起采集侧不再记这类记录，老库用本命令清理。\n"
 "  prune   --target IP [--before 7d] [--dry-run]\n"
 "          删除指定目标的探测历史，或删除早于某时间的探测记录。\n"
 "          只动 probe 表，不碰连接明细。\n"
@@ -1549,6 +1558,120 @@ static int cmd_client(uint64_t since_ms, const char *ip)
  *
  * 只删 probe / dnsq，不碰 conns（那是真实流量记录，不能动）。
  */
+/*
+ * 清理历史数据里「源地址是本机接口地址」的记录。
+ *
+ * 为什么需要单独一条命令：1.0.5 及更早版本只按「同网段互访」过滤，
+ * 没排除本机自身地址。开了 tun 代理（sing-box / homeproxy）之后，
+ * 同一份用户流量会在 conntrack 里出现两次 ——
+ *     src=<客户端>  dst=<目标>
+ *     src=<本机WAN> dst=<目标>
+ * 两条字节数几乎相同。结果：域名总量翻倍，WAN 地址还被当成一台设备
+ * 和真设备并列在设备榜里。
+ *
+ * 1.0.6 起采集侧直接不记这类记录，但已经入库的历史数据得靠这条命令清掉。
+ * 用 getifaddrs() 现取本机地址，不用手工填 IP。
+ */
+static int cmd_cleanup_self(int dry_run)
+{
+    struct ifaddrs *ifa, *p;
+    if (getifaddrs(&ifa) != 0) {
+        fprintf(stderr, "getifaddrs 失败: %s\n", strerror(errno));
+        return 1;
+    }
+
+    /* 收集本机地址（v4 用字符串形式，v6 也用文本，直接跟库里的 src 比） */
+    char ips[64][INET6_ADDRSTRLEN];
+    int  n_ip = 0;
+    for (p = ifa; p && n_ip < 64; p = p->ifa_next) {
+        if (!p->ifa_addr) continue;
+        int fam = p->ifa_addr->sa_family;
+        if (fam != AF_INET && fam != AF_INET6) continue;
+        void *src = (fam == AF_INET)
+            ? (void *)&((struct sockaddr_in *)p->ifa_addr)->sin_addr
+            : (void *)&((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr;
+        if (fam == AF_INET6) {
+            const uint8_t *b = (const uint8_t *)src;
+            if (b[0] == 0xfe && b[1] == 0x80) continue;   /* link-local 无用 */
+        }
+        char buf[INET6_ADDRSTRLEN];
+        if (!inet_ntop(fam, src, buf, sizeof buf)) continue;
+        if (!strcmp(buf, "127.0.0.1") || !strcmp(buf, "::1")) continue;
+        int dup = 0;
+        for (int i = 0; i < n_ip; i++)
+            if (!strcmp(ips[i], buf)) { dup = 1; break; }
+        if (!dup) snprintf(ips[n_ip++], sizeof ips[0], "%s", buf);
+    }
+    freeifaddrs(ifa);
+
+    if (!n_ip) {
+        fprintf(stderr, "没有识别到本机地址，中止\n");
+        return 1;
+    }
+
+    /* 拼 WHERE src IN (...) */
+    char where[2048] = "";
+    size_t w = 0;
+    for (int i = 0; i < n_ip; i++) {
+        /* 每个地址最多 INET6_ADDRSTRLEN+3 字节，先判剩余空间再追加，
+         * 避免 snprintf 截断告警（也顺手保证不会拼出半个引号）*/
+        size_t need = strlen(ips[i]) + (i ? 4 : 3);
+        if (w + need >= sizeof(where)) break;
+        w += (size_t)snprintf(where + w, sizeof(where) - w, "%s'%s'",
+                              i ? "," : "", ips[i]);
+    }
+
+    char sql[3072];
+    long long cnt = 0;
+    double bo = 0, br = 0;
+    snprintf(sql, sizeof sql,
+        "SELECT COUNT(*),IFNULL(SUM(byt_o),0),IFNULL(SUM(byt_r),0)"
+        " FROM conns WHERE src IN (%s);", where);
+    sqlite3_stmt *st = prep(sql);
+    if (st && sqlite3_step(st) == SQLITE_ROW) {
+        cnt = sqlite3_column_int64(st, 0);
+        bo  = sqlite3_column_double(st, 1);
+        br  = sqlite3_column_double(st, 2);
+    }
+    sqlite3_finalize(st);
+
+    if (g_json) {
+        printf("{\"self_ips\":[");
+        for (int i = 0; i < n_ip; i++) printf("%s\"%s\"", i ? "," : "", ips[i]);
+        printf("],\"rows\":%lld,\"bytes_out\":%.0f,\"bytes_in\":%.0f,"
+               "\"dry_run\":%s}\n", cnt, bo, br, dry_run ? "true" : "false");
+    } else {
+        printf("本机地址 %d 个:", n_ip);
+        for (int i = 0; i < n_ip; i++) printf(" %s", ips[i]);
+        printf("\n将被清理的记录: %lld 条，上行 %.1f MB，下行 %.1f MB\n",
+               cnt, bo / 1048576.0, br / 1048576.0);
+        if (dry_run) printf("（dry-run，未执行）\n");
+    }
+
+    if (dry_run || cnt == 0) return 0;
+
+    snprintf(sql, sizeof sql, "DELETE FROM conns WHERE src IN (%s);", where);
+    if (sqlite3_exec(g_db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "删除失败: %s\n", sqlite3_errmsg(g_db));
+        return 1;
+    }
+    long long gone = sqlite3_changes(g_db);
+    printf("已删除 %lld 条。\n", gone);
+
+    /*
+     * agg_hour 按「目的网段 + 协议 + 端口」聚合，**不含源地址** ——
+     * 所以无法按 src 精确回滚其中已经被重复计入的字节数。
+     * 要修正只能按小时把明细重放一遍，代价与收益不成比例（而且 30 天前
+     * 的明细已经被 GC 掉了，重放也算不出来）。
+     *
+     * 如实告诉用户：明细（conns）已经干净，聚合表的历史小时值仍然偏高。
+     */
+    if (!g_json)
+        printf("说明：agg_hour（按目的网段聚合）不含源地址，无法按 src 精确回滚；\n"
+               "     其中历史小时值仍然偏高，趋势图从下一个整点起才准确。\n");
+    return 0;
+}
+
 static int cmd_prune(const char *target, uint64_t before_ms, int dry_run)
 {
     if (!target && !before_ms) {
@@ -2534,7 +2657,8 @@ int main(int argc, char **argv)
     }
 
     /* prune 需要写权限，其他命令一律只读 */
-    g_rw = !strcmp(cmd, "prune");
+    /* 会改库的子命令必须用可写方式打开 */
+    g_rw = !strcmp(cmd, "prune") || !strcmp(cmd, "cleanup-self");
     /* client 依赖窗口函数与 bind，打开库前先挡掉非法 IP，省一次无谓 IO */
     if (!strcmp(cmd, "client") && !client_ip) {
         fprintf(stderr, "client 需要 --ip IP\n");
@@ -2573,6 +2697,7 @@ int main(int argc, char **argv)
     }
     else if (!strcmp(cmd, "status")) rc = cmd_status(dbp);
     else if (!strcmp(cmd, "prune"))  rc = cmd_prune(only_target, before_ms, dry_run);
+    else if (!strcmp(cmd, "cleanup-self")) rc = cmd_cleanup_self(dry_run);
     else if (!strcmp(cmd, "dashboard")) rc = cmd_dashboard(since);
     else {
         fprintf(stderr, "未知命令: %s\n\n", cmd);
