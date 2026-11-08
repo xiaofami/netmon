@@ -145,7 +145,7 @@ SDK_DIR=$PWD/sdk sh build/cross-build.sh build/out
 
 # 3. 打包。架构名查该 target 的 profiles.json 里的 arch_packages
 python3 build/build-apk.py --bin-dir build/out --arch mipsel_24kc --sdk sdk
-# → dist/netmon-1.0.0-r2-mipsel_24kc.apk
+# → dist/netmon-1.0.0-r3-mipsel_24kc.apk
 ```
 
 ### 方式三：本机跑测试（不产出 apk）
