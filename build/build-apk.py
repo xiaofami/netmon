@@ -35,7 +35,7 @@ SDK = ROOT / "build" / "sdk" / "immortalwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.L
 # 必须保持同目录结构，不能只复制 wrapper）。SDK 的 build_dir / 原始压缩包可以删。
 APK = SDK / "staging_dir" / "host" / "bin" / "apk"
 SSH = ["ssh", "-F", str(Path.home() / "netmon-work" / "netmon.conf"), "r"]
-VERSION = "1.0.0-r4"
+VERSION = "1.0.0-r5"
 
 # 目标架构：决定 apk 元数据里的 arch 字段与输出文件名。
 # 由 --arch 覆盖。非 x86_64 的架构必须配合 --bin-dir（本地交叉编译产物），

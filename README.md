@@ -133,7 +133,11 @@ B/C 形态下这是最明显的体验落差。
 netmon --sniff-if any
 
 # 启动时会打印识别到的本地网段，确认对不对
-logread | grep 本地网段
+logread -e netmon | grep 本地网段
+
+# 看周期心跳（采样耗时、DNS 应答率、库大小）：需要启动时加 -v，
+# 否则这类 debug 级日志不落盘，免得挤掉 logd 里别的服务
+logread -e netmon | grep stat:
 ```
 
 同网段互访不计流量这条，靠启动时枚举本机接口地址自动得出，**换网段不用改配置**。

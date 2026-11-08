@@ -47,6 +47,7 @@
 #include <ifaddrs.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <syslog.h>
 #include <sys/types.h>
 
 #include "ctparse.h"
@@ -139,18 +140,70 @@ static void on_signal(int sig)
     g_stop = 1;
 }
 
-static void logmsg(const char *fmt, ...)
+/*
+ * 日志：直接写 syslog，带正确的优先级。
+ *
+ * 之前所有输出都走 stderr，而 procd 把整个服务的 stderr 当成一个流交给 logd，
+ * 没有优先级的原始行一律被标成 daemon.err。结果 logread 里
+ * 「本地网段 192.168.1.0/24」这种正常信息也显示为错误，真出故障时反而淹没在
+ * 一堆 err 里分不出来。
+ *
+ * 现在按严重程度分四级写 LOG_DAEMON：
+ *   LOG_DEBUG   心跳统计、采样明细。默认不落盘 —— 每分钟一条，一天 1440 条，
+ *               会把 logd 那点环形缓冲里别的服务的日志挤掉。加 -v 才输出。
+ *   LOG_INFO    启停、网段识别、规则同步
+ *   LOG_WARNING 非致命降级（嗅探起不来、homeproxy 没装）
+ *   LOG_ERR     真故障（库打不开、建表失败、刷盘失败）
+ *
+ * 前台手跑（stderr 是终端）时同时打到终端，方便调试；被 procd 接管后
+ * stderr 不是终端，就只走 syslog，同一条日志不会记两遍。
+ */
+static int g_stderr_tty;    /* stderr 是不是终端，main 里初始化 */
+
+static void vlog(int pri, const char *fmt, va_list ap)
 {
-    va_list ap;
-    va_start(ap, fmt);
-    time_t t = time(NULL);
-    struct tm tm;
-    localtime_r(&t, &tm);
-    fprintf(stderr, "%04d-%02d-%02d %02d:%02d:%02d ",
-            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-            tm.tm_hour, tm.tm_min, tm.tm_sec);
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+
+    /* 注意用 "%s" 而不是把 buf 当格式串：日志里有 % 会被误解析 */
+    syslog(pri, "%s", buf);
+
+    if (g_stderr_tty) {
+        time_t t = time(NULL);
+        struct tm tm;
+        localtime_r(&t, &tm);
+        fprintf(stderr, "%04d-%02d-%02d %02d:%02d:%02d %s\n",
+                tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                tm.tm_hour, tm.tm_min, tm.tm_sec, buf);
+    }
+}
+
+static void logd(const char *fmt, ...)      /* debug：只在 -v 时落盘 */
+{
+    if (!g_cfg.verbose) return;
+    va_list ap; va_start(ap, fmt);
+    vlog(LOG_DEBUG, fmt, ap);
+    va_end(ap);
+}
+
+static void logi(const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt);
+    vlog(LOG_INFO, fmt, ap);
+    va_end(ap);
+}
+
+static void logw(const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt);
+    vlog(LOG_WARNING, fmt, ap);
+    va_end(ap);
+}
+
+static void loge(const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt);
+    vlog(LOG_ERR, fmt, ap);
     va_end(ap);
 }
 
@@ -196,7 +249,7 @@ static void load_local_nets(void)
 {
     struct ifaddrs *ifa, *p;
     if (getifaddrs(&ifa) != 0) {
-        logmsg("getifaddrs 失败: %s（LAN 内互访不过滤）", strerror(errno));
+        logw("getifaddrs 失败: %s（LAN 内互访不过滤）", strerror(errno));
         return;
     }
     for (p = ifa; p && g_lnet_n < MAX_LOCAL_NET; p = p->ifa_next) {
@@ -221,7 +274,7 @@ static void load_local_nets(void)
         /* 掩码转前缀长度：255.255.255.0 → 24 */
         int bits = 0;
         for (uint32_t m = g_lnet[i].mask; m; m <<= 1) bits++;
-        logmsg("本地网段 %s/%d（内部互访不计流量）", ip, bits);
+        logi("本地网段 %s/%d（内部互访不计流量）", ip, bits);
     }
 }
 
@@ -475,7 +528,7 @@ static void on_dns_event(const dns_event_t *e, void *ud)
 static void sniff_start(void)
 {
     if (!g_cfg.dns_sniff) {
-        logmsg("DNS 嗅探未启用（dns_sniff=0）");
+        logi("DNS 嗅探未启用（dns_sniff=0）");
         return;
     }
 
@@ -486,13 +539,13 @@ static void sniff_start(void)
          * 只警告，不退出。这是旁路功能，缺了不影响监控主流程，
          * 更不影响 DNS 本身。
          */
-        logmsg("DNS 嗅探启动失败（不影响 DNS 与监控）: %s", err);
+        logw("DNS 嗅探启动失败（不影响 DNS 与监控）: %s", err);
         return;
     }
 
     /* 把实际生效的接收缓冲区打出来：太小就是抓不全的元凶 */
     int rb = dnssniff_rcvbuf(g_sniff);
-    logmsg("DNS 嗅探已启动: 监听 %s（AF_PACKET 只读旁路，不参与转发）"
+    logi("DNS 嗅探已启动: 监听 %s（AF_PACKET 只读旁路，不参与转发）"
            " 接收缓冲=%dKB BPF过滤=%s",
            g_cfg.sniff_if ? g_cfg.sniff_if : "全部网卡", rb / 1024,
            dnssniff_filter_ok(g_sniff) ? "已启用(仅udp/53)"
@@ -519,7 +572,7 @@ static void do_rollup_and_gc(void)
         uint64_t from = nowms - 2ULL * 3600000ULL;   /* 滚最近两小时，覆盖边界 */
         long n = db_rollup_hourly(g_db, from, nowms);
         if (n >= 0)
-            logmsg("rollup: %ld 行", n);
+            logi("rollup: %ld 行", n);
         g_last_rollup = now;
     }
 
@@ -528,9 +581,9 @@ static void do_rollup_and_gc(void)
         uint64_t cutoff = wall_ms() - (uint64_t)g_cfg.retain_days * 86400000ULL;
         long n = db_gc(g_db, cutoff);
         if (n >= 0)
-            logmsg("gc: 删除 %ld 行（保留 %d 天）", n, g_cfg.retain_days);
+            logi("gc: 删除 %ld 行（保留 %d 天）", n, g_cfg.retain_days);
         else
-            logmsg("gc 失败");
+            loge("gc 失败");
         g_last_gc = now;
     }
 }
@@ -566,7 +619,7 @@ static void print_stats(void)
                  (unsigned long long)st.kernel_drops);
     }
 
-    logmsg("stat: 采样 %lu 次(均 %.0fus) 连接 %lu 条 | "
+    logd("stat: 采样 %lu 次(均 %.0fus) 连接 %lu 条 | "
            "明细 %lld 行 聚合 %lld 行 库 %.1fMB wal %.1fMB | "
            "dns %lu 行/%lu 映射 缓存 %zu IP | %s | 提交 %ld 次",
            g_stat.samples, avg_us, g_stat.conns_written,
@@ -643,6 +696,11 @@ int main(int argc, char **argv)
 {
     if (parse_args(argc, argv) != 0) return 1;
 
+    /* 前台手跑时 stderr 是终端，日志同时打到屏幕；被 procd 接管后不是终端，
+     * 就只走 syslog，避免同一条日志被记两遍（procd 会把 stderr 也收进 logd）。 */
+    g_stderr_tty = isatty(STDERR_FILENO);
+    openlog("netmon", LOG_PID, LOG_DAEMON);
+
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
@@ -655,7 +713,7 @@ int main(int argc, char **argv)
         if (slash && slash != dir) {
             *slash = '\0';
             if (mkdir_p(dir, 0755) != 0) {
-                logmsg("无法创建目录 %s: %s", dir, strerror(errno));
+                loge("无法创建目录 %s: %s", dir, strerror(errno));
                 return 1;
             }
         }
@@ -669,11 +727,11 @@ int main(int argc, char **argv)
     g_db = db_open(g_cfg.db_path, g_cfg.cache_kb, g_cfg.mmap_kb,
                    err, sizeof(err));
     if (!g_db) {
-        logmsg("数据库打开失败: %s", err);
+        loge("数据库打开失败: %s", err);
         return 1;
     }
     if (db_init_schema(g_db, err, sizeof(err)) != 0) {
-        logmsg("建表失败: %s", err);
+        loge("建表失败: %s", err);
         db_close(g_db);
         return 1;
     }
@@ -681,7 +739,7 @@ int main(int argc, char **argv)
     /* DNS 映射表 */
     g_dnsmap = dnsmap_new(131072);
     if (!g_dnsmap) {
-        logmsg("dnsmap 分配失败");
+        loge("dnsmap 分配失败");
         db_close(g_db);
         return 1;
     }
@@ -698,17 +756,17 @@ int main(int argc, char **argv)
                      "/etc/config/homeproxy", "/opt/netmon/data") == 0 &&
         hprules_available()) {
         const hp_version_t *v = hprules_version();
-        logmsg("homeproxy 规则已同步: %s", v->detail);
+        logi("homeproxy 规则已同步: %s", v->detail);
         db_hpevent_t e;
         memset(&e, 0, sizeof(e));
         e.ts_ms = wall_ms(); e.fp = v->fp; e.detail = v->detail;
         e.rules = v->rules;  e.patterns = v->patterns;
         db_add_hpevent(g_db, &e);
     } else {
-        logmsg("%s（可选依赖，采集与其它功能不受影响）", hprules_reason());
+        logw("%s（可选依赖，采集与其它功能不受影响）", hprules_reason());
     }
 
-    logmsg("netmon 启动: db=%s 采样=%dms 保留=%d天",
+    logi("netmon 启动: db=%s 采样=%dms 保留=%d天",
            g_cfg.db_path, g_cfg.sample_ms, g_cfg.retain_days);
 
     uint64_t next_sample = mono_ms();
@@ -731,7 +789,7 @@ int main(int argc, char **argv)
             g_stat.parse_fail += st.unknown;
 
             if (g_cfg.verbose)
-                logmsg("sample: %zu 行 %zu 存活 %zu 消亡 cost=%ums",
+                logd("sample: %zu 行 %zu 存活 %zu 消亡 cost=%ums",
                        st.parsed, st.alive, st.gone, (unsigned)cost);
 
             next_sample = now + (uint64_t)g_cfg.sample_ms;
@@ -744,7 +802,7 @@ int main(int argc, char **argv)
         if (g_sniff) {
             if (dnssniff_pump(g_sniff, on_dns_event, NULL) < 0) {
                 /* 致命错误（比如 fd 被关）：停掉，不重试，避免刷日志 */
-                logmsg("DNS 嗅探异常退出，后续不再反查域名");
+                logw("DNS 嗅探异常退出，后续不再反查域名");
                 sniff_stop();
             }
         }
@@ -752,9 +810,9 @@ int main(int argc, char **argv)
         /* ---- 刷盘 ---- */
         if (db_should_flush(g_db, now)) {
             long n = db_flush(g_db);
-            if (n < 0) logmsg("刷盘失败");
+            if (n < 0) loge("刷盘失败");
             else if (g_cfg.verbose)
-                logmsg("flush: %ld 行", n);
+                logd("flush: %ld 行", n);
         }
 
         /* ---- homeproxy 规则指纹（配置 / 规则集变化自动跟进） ---- */
@@ -767,7 +825,7 @@ int main(int argc, char **argv)
                 e.ts_ms = wall_ms(); e.fp = v->fp; e.detail = v->detail;
                 e.rules = v->rules;  e.patterns = v->patterns;
                 db_add_hpevent(g_db, &e);
-                logmsg("homeproxy 规则变更: %s", v->detail);
+                logi("homeproxy 规则变更: %s", v->detail);
             }
             next_hpchk = now + 30000;
         }
@@ -785,9 +843,9 @@ int main(int argc, char **argv)
     }
 
     /* ---- 退出清理 ---- */
-    logmsg("收到退出信号，清理中…");
+    logi("收到退出信号，清理中…");
     long flushed = db_flush(g_db);
-    logmsg("最后刷盘 %ld 行", flushed);
+    logi("最后刷盘 %ld 行", flushed);
     print_stats();
 
     if (g_dns_fd >= 0) close(g_dns_fd);
@@ -795,6 +853,7 @@ int main(int argc, char **argv)
     dnsmap_free(g_dnsmap);
     db_close(g_db);
 
-    logmsg("已退出");
+    logi("已退出");
+    closelog();
     return 0;
 }

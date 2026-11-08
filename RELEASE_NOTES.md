@@ -42,6 +42,27 @@ python3 build/build-apk.py --bin-dir build/out --arch <arch_packages> --sdk /pat
 
 整个过程不需要路由器在线，也不需要 OpenWrt 的完整构建树。
 
+## 1.0.0-r5 修了什么
+
+日志之前全部走 stderr，而 procd 把它当成一个流交给 logd，没有优先级的原始行
+一律标成 `daemon.err`。于是 `logread` 里连「本地网段 192.168.1.0/24」这种正常
+信息都显示为错误，真出故障时反而淹没在一片 err 里分不出来。
+
+改成直接调 `syslog(3)` 带级别写 `LOG_DAEMON`：
+
+| 级别 | 内容 |
+|---|---|
+| `daemon.info` | 启停、网段识别、规则同步 |
+| `daemon.warning` | 非致命降级（嗅探起不来、homeproxy 没装） |
+| `daemon.err` | 真故障（库打不开、建表失败、刷盘失败） |
+| `daemon.debug` | 心跳统计与采样明细，只在 `-v` 时输出 |
+
+心跳统计默认不落盘：每分钟一条，一天 1440 条，会把 logd 那点环形缓冲里
+别的服务的日志挤掉。要看的时候启动加 `-v`。
+
+前台手跑（stderr 是终端）时日志同时打到屏幕；被 procd 接管后只走 syslog，
+同一条不会记两遍。
+
 ## 1.0.0-r3 修了什么
 
 上一版（r2）里 `ignore_conn()` 用字节比较写死了两个 LAN 网段来判断「同网段互访」。
