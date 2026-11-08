@@ -10,8 +10,18 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'www/index.html'), 'utf8');
 const code = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
-const preview = fs.readFileSync(path.join(root, 'www/preview-live.html'), 'utf8');
-const demo = JSON.parse(/var NETMON_DEMO=(\{.*?\});<\/script>/s.exec(preview)[1].replace(/<\\\//g, '</'));
+/* 数据源优先用脱敏后的 demo.html（仓库里就有），这样测试可离线复现；
+ * 只有在本地跑 make-preview.py 抓了真实数据后才用 preview-live.html。
+ * 两者结构完全一致，断言不区分。 */
+function pickData() {
+  for (const f of ['www/demo.html', 'www/preview-live.html']) {
+    const p = path.join(root, f);
+    if (fs.existsSync(p)) { console.log('数据源: ' + f); return fs.readFileSync(p, 'utf8'); }
+  }
+  throw new Error('缺少 www/demo.html —— 先跑 python3 build/make-demo.py 生成脱敏数据');
+}
+const demoHtml = pickData();
+const demo = JSON.parse(/var NETMON_DEMO=(\{.*?\});<\/script>/s.exec(demoHtml)[1].replace(/<\\\//g, '</'));
 
 const els = new Map();
 const listenerMap = {};
@@ -95,7 +105,7 @@ check('KPI 渲染', has('kpi-grid', 'DNS 查询'));
 check('活跃客户端 KPI', has('kpi-grid', '活跃客户端'));
 check('DNS 趋势图有柱子', (el('chart-dns').innerHTML.match(/bcol/g) || []).length > 5);
 check('流量趋势图有柱子', (el('chart-traffic').innerHTML.match(/bcol/g) || []).length > 0);
-check('设备榜含真实名称', has('ov-clients', 'OPPO-Find-X6'));
+check('设备榜有下钻项', (el('ov-clients').innerHTML.match(/data-goto=/g) || []).length > 0);
 check('域名榜有内容', has('ov-domains', '.'));
 check('拦截概览取代线路质量', has('ov-blocked', 'class="row') || has('ov-blocked', '暂无'));
 check('最近查询有设备名', has('ov-recent', 'data-goto'));
@@ -115,7 +125,7 @@ go('#/clients');
 const devCount = demo.dashboard.devices.length;
 check('卡片渲染全部设备', (el('clients-grid').innerHTML.match(/<div class="dcard[ "]/g) || []).length === devCount,
   (el('clients-grid').innerHTML.match(/<div class="dcard[ "]/g) || []).length + ' 张');
-check('GEN8-1 有名字', has('clients-grid', 'GEN8-1'));
+check('NAS-1 有名字', has('clients-grid', 'NAS-1'));
 check('静态分配徽章', has('clients-grid', '静态地址分配'));
 check('卡片不再写「查看详情」', !has('clients-grid', '查看详情'));
 /* 该状态依赖实时数据：设备拿到新 IP 后就不再是 stale。
@@ -124,39 +134,45 @@ const staleCount = demo.dashboard.devices.filter(x => x.stale_static).length;
 check('静态未生效提示', staleCount ? has('clients-grid', '静态未生效') : true,
   staleCount ? staleCount + ' 台样本' : '当前无样本，跳过');
 check('多网卡徽章', has('clients-grid', '多网卡'));
-check('列表视图有内容', has('clients-list', 'GEN8-1'));
+check('列表视图有内容', has('clients-list', 'NAS-1'));
 check('计数条正常', has('clients-count', '<b>' + devCount + '</b>'));
 check('卡片有收藏星标', (el('clients-grid').innerHTML.match(/data-star=/g) || []).length >= devCount);
 check('工具栏有只看收藏', html.indexOf('只看收藏') >= 0);
 
 console.log('\n== 设备详情（含流量趋势） ==');
-go('#/client/192.168.1.1242');
-check('hero 显示设备名', has('detail-head', 'GEN8-1'));
-check('hero 显示 MAC', has('detail-head', 'D0:BF:9C:46:DD:39'));
+go('#/client/' + demo.dashboard.devices[0].device.ip);
+check('hero 显示设备名', has('detail-head', demo.dashboard.devices[0].device.display));
+check('hero 显示 MAC', /[0-9A-F]{2}(:[0-9A-F]{2}){5}/.test(el('detail-head').innerHTML));
 check('详情 KPI', has('detail-kpi', '不同域名'));
 check('查询活动曲线', (el('detail-timeline').innerHTML.match(/bcol/g) || []).length > 5);
 check('设备流量趋势图', (el('detail-flow').innerHTML.match(/bcol/g) || []).length > 0);
 check('流量趋势有合计', el('detail-flow-total').textContent.indexOf('合计') >= 0);
-check('Top 域名', has('detail-domains', 'rtmp07open.ys7.com'));
+check('常访域名有内容', (el('detail-domains').innerHTML.match(/class="row/g) || []).length > 0);
 check('环形图', has('detail-donut', '<svg'));
-check('流量目的地', has('detail-traffic', 'ys7.com'));
+check('流量目的地有内容', (el('detail-traffic').innerHTML.match(/class="row/g) || []).length > 0);
 check('查询日志分页每页 15 条', (el('detail-recent').innerHTML.match(/class="row g-log2"/g) || []).length === 15);
 check('三个榜单都有分页条', has('pg-domains', '条') && has('pg-traffic', '条') && has('pg-recent', '共'));
-check('页面标题跟随设备', el('page-title').textContent === 'GEN8-1');
+check('页面标题跟随设备', el('page-title').textContent === demo.dashboard.devices[0].device.display);
 check('设备详情有备注框', has('client-note', 'data-notetype'));
 check('设备详情备注框带星标', has('client-note', 'data-star'));
 
 console.log('\n== 切换设备不残留旧数据 ==');
-go('#/client/192.168.1.1207');
-check('hero 换成 OPPO', has('detail-head', 'OPPO-Find-X6'));
-check('不再显示 GEN8-1', !has('detail-head', 'GEN8-1'));
+const devA = demo.dashboard.devices[0].device;
+const devB = (demo.dashboard.devices.filter(d => d.device.ip !== devA.ip)[0] || {}).device;
+if (devB) {
+  go('#/client/' + devB.ip);
+  check('hero 换成另一台', has('detail-head', devB.display));
+  check('不再显示上一台', !has('detail-head', devA.display));
+} else {
+  check('demo 里至少两台设备', false);
+}
 
 console.log('\n== 拦截与规则 ==');
 go('#/blocks');
 check('拦截 KPI 渲染', has('blocks-kpi', '广告 / 规则拦截'));
 check('规则清单含 BlockAD', has('blocks-rules', 'BlockAD'));
 check('规则同步状态', has('blocks-hpinfo', '实时同步'));
-check('被拦截域名榜', has('blocks-blocked', 'gdt.qq.com'));
+check('被拦截域名榜有内容', (el('blocks-blocked').innerHTML.match(/class="row/g) || []).length > 0);
 check('真实异常榜', (el('blocks-unresolved').innerHTML.match(/class="row/g) || []).length > 0);
 check('规则变更历史', has('blocks-events', '配置变更') || has('blocks-events', '初始加载'));
 check('不再有代理可达性探测', !has('blocks-kpi', '建议加代理规则'));
@@ -228,19 +244,19 @@ check('收藏切换能过滤列表', (function () {
   vm.runInNewContext("S.filter='fav';S.q='';renderView();", sandbox);
   go('#/clients');
   const zero = (el('clients-grid').innerHTML.match(/<div class="dcard[ "]/g) || []).length;
-  vm.runInNewContext("favToggle('ip','192.168.1.1242');", sandbox);
+  vm.runInNewContext("favToggle('ip','192.168.2.242');", sandbox);
   const one = (el('clients-grid').innerHTML.match(/<div class="dcard[ "]/g) || []).length;
   return zero === 0 && one === 1;
 })());
 check('收藏状态显示在卡片上', has('clients-grid', 'star on'));
 check('备注可保存并显示在卡片', (function () {
-  vm.runInNewContext("noteSet('ip','192.168.1.1242','客厅 NAS');S.filter='all';renderView();", sandbox);
+  vm.runInNewContext("noteSet('ip','192.168.2.242','客厅 NAS');S.filter='all';renderView();", sandbox);
   return has('clients-grid', '客厅 NAS');
 })());
 check('备注参与搜索', (function () {
   vm.runInNewContext("S.q='客厅';", sandbox);
   go('#/clients');
-  return has('clients-grid', 'GEN8-1') &&
+  return has('clients-grid', 'NAS-1') &&
          (el('clients-grid').innerHTML.match(/<div class="dcard[ "]/g) || []).length === 1;
 })());
 check('告警结论基于真实指标', has('alert-pop', '站内告警'));
@@ -249,7 +265,7 @@ go('#/overview');
 check('从详情返回总览正常', has('kpi-grid', 'DNS 查询'));
 
 console.log('\n== 翻页、筛选、搜索与皮肤 ==');
-go('#/client/192.168.1.1242');
+go('#/client/192.168.2.242');
 const p1 = el('detail-recent').innerHTML;
 vm.runInNewContext("S.page.recent=2;renderView();", sandbox);
 check('翻到第 2 页内容变化', el('detail-recent').innerHTML !== p1);
@@ -329,10 +345,14 @@ check('独立端口模式用 /cgi-bin/data',
 console.log('\n== 交互：时间范围与搜索 ==');
 vm.runInNewContext("S.since=604800; load(); renderView();", sandbox);
 check('7 天范围可渲染', has('kpi-grid', 'DNS 查询'));
-vm.runInNewContext("S.q='gen8';", sandbox);
+const anyDev = demo.dashboard.devices[0].device;
+const key = String(anyDev.display).split(/[-\s]/)[0].slice(0, 4).toLowerCase();
+const countCards = () => (el('clients-grid').innerHTML.match(/<div class="dcard[ "]/g) || []).length;
 go('#/clients');
-vm.runInNewContext("S.q='gen8'; renderView();", sandbox);
-check('搜索过滤生效', !has('clients-grid', 'OPPO-Find-X6') && has('clients-grid', 'GEN8-1'));
+const before = countCards();
+vm.runInNewContext("S.q=" + JSON.stringify(key) + "; renderView();", sandbox);
+const after = countCards();
+check('搜索过滤生效', after > 0 && after < before, key + ' → ' + after + '/' + before);
 
 console.log('\n' + (fail ? '✗ ' + fail + ' 项失败' : '✓ 全部渲染检查通过'));
 process.exit(fail ? 1 : 0);

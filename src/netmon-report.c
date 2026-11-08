@@ -478,7 +478,7 @@ static int cmd_probe(uint64_t since_ms, const char *only_target)
  *   3) rcode=3 (NXDOMAIN)          —— 域名不存在，属于被查方的问题。
  *      rcode=5 (REFUSED)            —— 服务端拒答，通常是分流策略的正常行为。
  *
- * 之所以拆开：之前把 rcode!=0 一律算成"失败"，导致 iot.sctel.com.cn 这类
+ * 之所以拆开：之前把 rcode!=0 一律算成"失败"，导致 iot.isp-gateway.cn 这类
  * 设备反复查询不存在域名的场景显示成 ok=0，看起来像 DNS 故障；
  * 其实链路 0 丢包、平均 0.008ms，完全是设备侧在问一个不存在的域名。
  * 把"链路通"和"域名存在"混为一个成功率，是在制造假故障。

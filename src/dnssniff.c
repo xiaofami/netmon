@@ -54,7 +54,7 @@ typedef struct {
      * 并发发出 A 和 AAAA 两条查询，而事务 ID 取自同一个自增/随机池，重号率极高。
      * 之前 key 只有 (txid, ip, port)，第二条查询被当成"重传"只刷新时间，
      * 于是两条应答里必然有一条配不上 —— 实测凡是发 AAAA 的域名应答率
-     * 都正好掉到 50%（www.workbuddy.cn 48.5%、galileotelemetry 50.0%），
+     * 都正好掉到 50%（实测几个双栈域名都落在 48%~50%），
      * 而只发 A 的域名（baidu/github/cloudflare）都是 100%。
      * 耗时因此有整整一半被记成 NULL，看起来像 DNS 丢包，其实是自己的 bug。
      */

@@ -245,7 +245,7 @@ static void t_scale(void)
  * 旧代码一律 memcpy(key+12, ip+12, 4)，查询侧永远取到 0，
  * 所有 IPv4 都归一化成 ::ffff:0.0.0.0，命中同一个槽位。
  * 症状：任意 IPv4 连接反查时拿到的都是"最近被 DNS 拦截的某个域名"，
- * 导致 120.220.188.221（萤石 RTMP）被标成 mssdk.volces.com 等 7 种无关域名。
+ * 导致 203.0.113.45（萤石 RTMP）被标成 mssdk.volces.com 等 7 种无关域名。
  */
 static void to_ip4_raw(const char *s, uint8_t out[16])
 {
@@ -261,14 +261,14 @@ static void t_v4_form_normalize(void)
     dnsmap_t *m = dnsmap_new(4096);
 
     /* 用 v4-mapped 写入（模拟 dnsmap_add / DNS 嗅探） */
-    dnsmap_feed(m, "dnsmasq[1]: reply rtmp07open.ys7.com is 120.220.188.221", 100);
+    dnsmap_feed(m, "dnsmasq[1]: reply rtmp01open.ipcam-cloud.com is 203.0.113.45", 100);
     dnsmap_feed(m, "dnsmasq[1]: reply www.baidu.com is 110.242.68.66", 101);
 
     /* 用裸 v4 查询（模拟 ctparse 传来的 conntrack key） */
     uint8_t raw[16];
-    to_ip4_raw("120.220.188.221", raw);
+    to_ip4_raw("203.0.113.45", raw);
     const char *a = dnsmap_lookup(m, 4, raw);
-    CHECK(a && strcmp(a, "rtmp07open.ys7.com") == 0,
+    CHECK(a && strcmp(a, "rtmp01open.ipcam-cloud.com") == 0,
           "裸 v4 能查到 v4-mapped 写入的记录 (got %s)", a ? a : "NULL");
 
     /* 核心回归：两个不同 IP 必须各查各的，不能串味 */

@@ -274,7 +274,7 @@ ssh -F ~/.ssh/netmon.conf r 'nslookup www.baidu.com 127.0.0.1; ping -c 2 223.5.5
 DNS 分流和解析**完全不受影响**。
 
 验证结果：
-- 能抓到真实域名（`rtmp07open.ys7.com`、`api.bilibili.com`、`hm.baidu.com` 等）
+- 能抓到真实域名（`rtmp01open.ipcam-cloud.com`、`api.example-video.com`、`analytics.example-cdn.com` 等）
 - 解析成功率 94%
 - 反查表建立 19+ 条 IP→域名映射
 - 服务运行期间 DNS 一切正常

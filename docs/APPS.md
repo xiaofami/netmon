@@ -91,7 +91,7 @@ SQL 在 `emit_privacy()`，输出源 IP、次数、上行总量、目标去重�
 `analytics` / `upload` 等关键词，按设备+域名聚合，输出线索类型。
 
 > 当前实测：`suspects = 0`、`telemetry = 19`（含
-> `galileotelemetry.tencent.com`、`otheve.beacon.qq.com` 等）、`watch = 12`。
+> `telemetry.example-vendor.com`、`beacon.example-sdk.com` 等）、`watch = 12`。
 > **0 条疑似是真实结论**，不是阈值写错：库里短时上行连接最多的一台也只有 5 次。
 > 没有为了「看起来有结果」放宽阈值制造误报。
 

@@ -241,7 +241,7 @@ static inline const uint8_t *v4bytes(const uint8_t ip[16]) {
 **这是 6.1 的同类问题，但当时只修了 db/cidr，dnsmap 漏了。**
 
 现象：用户问「`mssdk.volces.com` 跑了 1.2T，是什么」。查下去发现
-同一个目的 IP `120.220.188.221` 在连接表里被标成了 **7 种毫无关系的域名**：
+同一个目的 IP `203.0.113.45` 在连接表里被标成了 **7 种毫无关系的域名**：
 
 ```
 mssdk.volces.com              9956 条   1.29T   ← 火山引擎媒体 SDK
@@ -252,7 +252,7 @@ apmplus.volces.com             212 条     47G
 （还有 2 个）
 ```
 
-而 DNS 记录显示这个 IP **只被 `rtmp07open.ys7.com`（萤石云监控）解析过**。
+而 DNS 记录显示这个 IP **只被 `rtmp01open.ipcam-cloud.com`（网络摄像头）解析过**。
 
 **根因**：IPv4 在程序里有两种内存表示，dnsmap 的写入侧和查询侧各用一种，谁也没归一化：
 
@@ -303,7 +303,7 @@ static int is_unspecified(uint8_t family, const uint8_t ip[16]) { ... }
 - **两个不同 IP 不串味**（核心）
 - `0.0.0.0` 写入被拒绝、查询返回 NULL
 
-修复后 `120.220.188.221` 只剩下 `rtmp07open.ys7.com` 一种标记。
+修复后 `203.0.113.45` 只剩下 `rtmp01open.ipcam-cloud.com` 一种标记。
 
 **教训：**
 
@@ -328,7 +328,7 @@ static int is_unspecified(uint8_t family, const uint8_t ip[16]) { ... }
 查数据库发现同一条五元组被记录了 **360 次**：
 
 ```
-dst=120.220.188.221 sport=48218  记录 360 次  累计 1470 GB
+dst=203.0.113.45 sport=48218  记录 360 次  累计 1470 GB
 ```
 
 而这 360 条记录的 `byt_r` 是**单调递增**的：
@@ -466,7 +466,7 @@ sing-box 的 `.srs` v2 是 `SRS\x02` + zlib，解压后是压缩 domain trie + �
 
 **教训**：判定阈值要用真实对照样本验证，不能凭直觉。
 本次是用 `www.baidu.com`（直连 200）、`www.google.com`（代理 302）、
-`github.com`（代理 206）、`iot.sctel.com.cn`（解析失败 000）四条对照确认的。
+`github.com`（代理 206）、`iot.isp-gateway.cn`（解析失败 000）四条对照确认的。
 
 ### 7.4 其它
 

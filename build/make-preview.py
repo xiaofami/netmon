@@ -6,15 +6,31 @@
 内嵌进 index.html，通过 NETMON_DEMO 钩子让 xhr 直接返回本地数据，
 file:// 打开即可完整交互（包括所有榜单下钻）。
 
-用途：不用连路由器也能看面板效果、给用户看交付物、无头浏览器验证。
+用途：不用连路由器也能看面板效果、做交付截图、无头浏览器验证。
+
+注意：产出的 preview-live.html 内含**真实设备名、内网地址与域名**，
+不要提交到仓库（.gitignore 已排除）。对外展示请跑 build/make-demo.py
+生成脱敏版 www/demo.html。
+
+用法：
+    python3 build/make-preview.py --host 192.168.1.1:8090
+    python3 build/make-demo.py --input www/preview-live.html
 """
+import argparse
 import json
 import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
-BASE = 'http://192.168.1.1:8090/cgi-bin/data'
-ROOT = Path('/home/pico/WorkBuddy/immortalwrt/netmon/www')
+ROOT = Path(__file__).resolve().parent.parent
+WWW = ROOT / 'www'
+
+ap = argparse.ArgumentParser()
+ap.add_argument('--host', default='192.168.1.1:8090',
+                help='路由器面板地址，默认 http://192.168.1.1:8090')
+ap.add_argument('--hours', type=int, default=24, help='统计窗口（小时）')
+args = ap.parse_args()
+BASE = 'http://%s/cgi-bin/data' % args.host
 
 
 def get(url):
@@ -22,12 +38,12 @@ def get(url):
         return json.loads(r.read().decode('utf-8'))
 
 
-dash = get(BASE + '?since=86400')
+dash = get(BASE + '?since=%d' % (args.hours * 3600))
 ips = ['192.168.1.101', '192.168.1.102', '192.168.1.100']
 clients = {}
 for ip in ips:
     try:
-        clients[ip] = get(BASE + '?view=client&ip=' + ip + '&since=86400')
+        clients[ip] = get(BASE + '?view=client&ip=' + ip + '&since=%d' % (args.hours * 3600))
     except Exception as e:
         print('  [warn] %s: %s' % (ip, e))
 
@@ -36,14 +52,12 @@ cases = [
     ('host', '1.1.1.1'),
     ('qname', (dash.get('dns') or [{'q': 'example.com'}])[0]['q']),
     ('cidr', (dash.get('top_cidr') or [{'k': '0.0.0.0/0'}])[0]['k']),
-    ('app', (dash.get('app_stats') or [{'cat': '其他'}])[0]['cat']),
-    ('verdict', 'need_proxy'),
 ]
 details = {}
 for t, k in cases:
     try:
         details[t + '|' + k] = get(BASE + '?view=detail&type=' + t +
-                                   '&key=' + quote(str(k), safe='') + '&since=86400')
+                                   '&key=' + quote(str(k), safe='') + '&since=%d' % (args.hours * 3600))
     except Exception as e:
         print('  [warn] detail %s/%s: %s' % (t, k, e))
 
@@ -58,14 +72,14 @@ blob = json.dumps(demo, ensure_ascii=False, separators=(',', ':'))
 # 防止数据里出现 </script> 提前闭合脚本
 blob = blob.replace('</', '<\\/')
 
-html = (ROOT / 'index.html').read_text(encoding='utf-8')
+html = (WWW / 'index.html').read_text(encoding='utf-8')
 inject = '<script>var NETMON_DEMO=' + blob + ';</script>\n'
 marker = '<script>\n\'use strict\';'
 if marker not in html:
     raise SystemExit('找不到 <script> 注入点')
 html = html.replace(marker, inject + marker, 1)
 
-out = ROOT / 'preview-live.html'
+out = WWW / 'preview-live.html'
 out.write_text(html, encoding='utf-8')
 print('生成 %s (%d KB)' % (out, out.stat().st_size // 1024))
 print('  设备 %d 台，内嵌设备详情 %d 台，小时数据点 %d 个，条目详情 %d 类' %

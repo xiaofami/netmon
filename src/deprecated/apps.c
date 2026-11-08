@@ -2,7 +2,7 @@
  * apps.c - 服务识别实现
  *
  * 表是数据不是逻辑，新增服务只要加一行，不需要动任何匹配代码。
- * 顺序即优先级：越具体的放前面（例如 ys7.com 要在 cdn 之前）。
+ * 顺序即优先级：越具体的放前面（例如具体厂商域名要在 cdn 之前）。
  */
 #include "apps.h"
 
@@ -30,10 +30,10 @@ static const sig_t SIGS[] = {
     {"rtmp,flv,hls,.live.,livecdn,pushcdn", "直播流", "直播/监控"},
 
     /* ---- 监控 / NAS / 物联网 ---- */
-    {"ys7,ezviz,hikvision,ezvizlife", "萤石云 / 监控", "监控"},
+    {"ipcam,ezviz,hikvision,camera-cloud", "网络摄像头 / 监控", "监控"},
     {"synology,ugnas,ugreen,qnap,dsm.", "NAS / 私有云", "存储备份"},
     {"mi.com,xiaomi,miui,xiaomi.net,mijia", "小米 / 米家", "IoT"},
-    {"sctel,10086.cn,chinamobile", "运营商 IoT", "IoT"},
+    {"isp-gateway,iot.isp,carrier-iot", "运营商 IoT", "IoT"},
     {"mqtt,airmx,roborock,midea,phicomm,qingping", "智能设备", "IoT"},
 
     /* ---- 下载 / P2P / 更新 ---- */

@@ -181,9 +181,9 @@ bind(fd, br-lan);       // 只监听 LAN 侧
 
 ```
 $ ./dnssniff2 8
-iot.sctel.com.cn
+iot.isp-gateway.cn
 rawframe-probe.example
-rtmp07open.ys7.com
+rtmp01open.ipcam-cloud.com
 time.apple.com
 --- udp53 frames=32 parsed=30 ---
 ```
@@ -193,9 +193,9 @@ time.apple.com
 部署到 netmon 后，实际抓到的域名：
 
 ```
-www.workbuddy.cn           46 次
-rtmp07open.ys7.com         45 次      ← 萤石摄像头
-galileotelemetry.tencent.com 38 次
+www.example-saas.com           46 次
+rtmp01open.ipcam-cloud.com         45 次      ← 网络摄像头
+telemetry.example-vendor.com 38 次
 api.bilibili.com            6 次
 hm.baidu.com               14 次
 c13b3dc6...a2z.com          4 次      ← 亚马逊设备遥测
@@ -232,9 +232,9 @@ DNS 报文只有 16 位事务 ID + 四元组。用 `(txid, client_ip, client_por
 局域网 DNS 命中缓存时耗时 0.1~0.5ms。用毫秒取整会全部变成 0，
 报表上一片 `0.0ms`，看不出任何差异。改用 `clock_gettime` 微秒精度后：
 ```
-iot.sctel.com.cn            0.005 ms
-galileotelemetry.tencent.com 0.006 ms
-rtmp07open.ys7.com          0.102 ms
+iot.isp-gateway.cn            0.005 ms
+telemetry.example-vendor.com 0.006 ms
+rtmp01open.ipcam-cloud.com          0.102 ms
 www.cloudflare.com         31.100 ms
 github.com                 64.500 ms
 ```
@@ -402,12 +402,12 @@ MISS 数量和模式完全一样 —— 不是 BPF 的问题。
 
 | 域名 | 来源设备 | A 配对 | AAAA 配对 |
 |---|---|---|---|
-| rtmp07open.ys7.com | 萤石摄像头 | 1180/1180 | **1180/1180** ✅ |
-| www.workbuddy.cn | DESKTOP | 171/171 | **1/171** ❌ |
-| galileotelemetry.tencent.com | DESKTOP | 159/159 | **1/159** ❌ |
+| rtmp01open.ipcam-cloud.com | 网络摄像头 | 1180/1180 | **1180/1180** ✅ |
+| www.example-saas.com | Desktop-1 | 171/171 | **1/171** ❌ |
+| telemetry.example-vendor.com | Desktop-1 | 159/159 | **1/159** ❌ |
 
-**关键观察：抓 AAAA 的能力本身是正常的**（萤石 1180/1180 完美）。
-只有 DESKTOP 这一台设备的 AAAA 查询不可见，而它的 A 查询完全正常。
+**关键观察：抓 AAAA 的能力本身是正常的**（某摄像头域名 1180/1180 完美）。
+只有 Desktop-1 这一台设备的 AAAA 查询不可见，而它的 A 查询完全正常。
 
 已排除的原因：BPF、接口、IPv6、内核丢帧、TCP DNS（只有 9 条连接）、
 nftables 流加速（无 `flow add` 规则）、网桥拓扑（br-lan 只挂 eth0）。

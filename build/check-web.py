@@ -2,21 +2,25 @@
 # -*- coding: utf-8 -*-
 """前端静态自检：抽出 <script> 交给 node --check，并比对 DOM id 与 JS 引用。"""
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-P = Path('/home/pico/WorkBuddy/immortalwrt/netmon/www/index.html')
+ROOT = Path(__file__).resolve().parent.parent
+P = ROOT / 'www' / 'index.html'
 html = P.read_text(encoding='utf-8')
 
 m = re.search(r'<script>(.*?)</script>', html, re.S)
 if not m:
     sys.exit('没找到 <script>')
 js = m.group(1)
-jsfile = Path('/home/pico/WorkBuddy/immortalwrt/netmon/build/check.js')
+jsfile = ROOT / 'build' / '.check-extracted.js'
 jsfile.write_text(js, encoding='utf-8')
 
-node = '/home/pico/.workbuddy/binaries/node/versions/22.22.2/bin/node'
+node = shutil.which('node')
+if not node:
+    sys.exit('找不到 node，请先安装 Node.js')
 r = subprocess.run([node, '--check', str(jsfile)], capture_output=True, text=True)
 print('node --check :', 'PASS' if r.returncode == 0 else 'FAIL')
 if r.returncode:
