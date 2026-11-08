@@ -1,0 +1,2510 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 面板经常更新，禁止浏览器留旧副本；uhttpd 静态文件不发 no-store，靠 meta 兜底 -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<meta name="build" content="20261108d">
+<title>netmon · 网络监控</title>
+<style>
+/* ================= 主题变量 ================= */
+:root[data-theme="dark"]{
+  --bg:#0c1118; --side:#0a0e14; --surface:#141b25; --surface2:#19222e;
+  --surface3:#222d3c; --line:#243040; --line2:#314055;
+  --fg:#e8eef6; --fg2:#98a8ba; --fg3:#64748a;
+  --accent:#5aa2ff; --accent2:#8b7cff; --teal:#2ec4a6;
+  --ok:#3fb950; --warn:#e3b341; --bad:#f0655f;
+  --down:#3fb950; --up:#5aa2ff;
+  --shadow:0 4px 20px rgba(0,0,0,.22);
+  --glow:0 0 0 3px rgba(90,162,255,.12);
+}
+:root[data-theme="light"]{
+  --bg:#f2f5f9; --side:#ffffff; --surface:#ffffff; --surface2:#f6f8fb;
+  --surface3:#eaf0f7; --line:#e0e7f0; --line2:#cbd6e4;
+  --fg:#1d2937; --fg2:#5c6c7f; --fg3:#8b9aab;
+  --accent:#2f7de1; --accent2:#7057e8; --teal:#0d9b85;
+  --ok:#1a9c47; --warn:#c78a09; --bad:#d94841;
+  --down:#1a9c47; --up:#2f7de1;
+  --shadow:0 2px 12px rgba(24,45,75,.07);
+  --glow:0 0 0 3px rgba(47,125,225,.12);
+}
+
+/* 皮肤：全部通过 CSS 变量覆盖，不复制任何布局规则。
+   新增皮肤只需再加一组 :root[data-theme="..."]。 */
+:root[data-theme="midnight"]{
+  --bg:#060a12; --side:#04070e; --surface:#0d1422; --surface2:#121c2e;
+  --surface3:#1b2740; --line:#1d2b45; --line2:#2d4063;
+  --fg:#e6eeff; --fg2:#93a6c4; --fg3:#60759a;
+  --accent:#6fa8ff; --accent2:#a78bfa; --teal:#34d3b5;
+  --ok:#48c78e; --warn:#e8bd5a; --bad:#ff7a72;
+  --down:#48c78e; --up:#6fa8ff;
+  --shadow:0 4px 22px rgba(0,0,0,.5); --glow:0 0 0 3px rgba(111,168,255,.15);
+}
+:root[data-theme="nord"]{
+  --bg:#242933; --side:#1e232c; --surface:#2b313c; --surface2:#333a47;
+  --surface3:#3d4553; --line:#414956; --line2:#525c6c;
+  --fg:#eceff4; --fg2:#b8c2d0; --fg3:#8590a2;
+  --accent:#88c0d0; --accent2:#b48ead; --teal:#8fbcbb;
+  --ok:#a3be8c; --warn:#ebcb8b; --bad:#bf616a;
+  --down:#a3be8c; --up:#88c0d0;
+  --shadow:0 4px 20px rgba(0,0,0,.28); --glow:0 0 0 3px rgba(136,192,208,.15);
+}
+:root[data-theme="solar"]{
+  --bg:#fbf3e4; --side:#f6ead4; --surface:#fffaf0; --surface2:#f7edda;
+  --surface3:#eddfc6; --line:#e3d3b6; --line2:#cdb98f;
+  --fg:#3b2f22; --fg2:#6f5c45; --fg3:#9a8567;
+  --accent:#c2641c; --accent2:#9c4f9e; --teal:#0f8a7a;
+  --ok:#4a8a35; --warn:#b8860b; --bad:#c0392b;
+  --down:#4a8a35; --up:#c2641c;
+  --shadow:0 2px 12px rgba(90,60,20,.10); --glow:0 0 0 3px rgba(194,100,28,.12);
+}
+:root[data-theme="contrast"]{
+  --bg:#000000; --side:#000000; --surface:#0a0a0a; --surface2:#161616;
+  --surface3:#262626; --line:#4d4d4d; --line2:#8a8a8a;
+  --fg:#ffffff; --fg2:#e0e0e0; --fg3:#b0b0b0;
+  --accent:#4db8ff; --accent2:#d09cff; --teal:#3ce0c0;
+  --ok:#5fe07a; --warn:#ffd24a; --bad:#ff6b6b;
+  --down:#5fe07a; --up:#4db8ff;
+  --shadow:0 0 0 1px #4d4d4d; --glow:0 0 0 3px rgba(77,184,255,.35);
+}
+:root[data-theme="contrast"] .kpi,.panel,.dcard{border-width:2px}
+:root[data-theme="contrast"] .nav-item.on{outline:2px solid var(--accent)}
+:root{
+  --mono:'SF Mono',SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace;
+  --r:13px; --rs:9px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--bg);color:var(--fg);
+  font:13.5px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',
+       'Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  -webkit-font-smoothing:antialiased;min-height:100vh;
+}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+svg{display:block}
+button,input,select{font-family:inherit}
+a{color:inherit;text-decoration:none}
+
+.app{display:grid;grid-template-columns:224px minmax(0,1fr);min-height:100vh}
+
+/* ================= 侧边栏 ================= */
+.side{
+  background:var(--side);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh;
+  padding:20px 12px 14px;z-index:20;
+}
+.brand{display:flex;align-items:center;gap:11px;padding:0 8px 22px}
+.brand-mark{
+  width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;
+  background:linear-gradient(140deg,var(--accent),var(--accent2));color:#fff;
+  box-shadow:0 5px 16px rgba(90,162,255,.3);
+}
+.brand-tx b{display:block;font-size:15px;font-weight:680;letter-spacing:.2px;line-height:1.2}
+.brand-tx small{display:block;color:var(--fg3);font-size:10.5px;letter-spacing:.6px;margin-top:2px}
+.nav-cap{
+  color:var(--fg3);font-size:10px;font-weight:650;letter-spacing:1.2px;
+  text-transform:uppercase;padding:12px 12px 7px;
+}
+.nav-item{
+  display:flex;align-items:center;gap:11px;padding:9px 11px;margin:2px 0;
+  border-radius:var(--rs);color:var(--fg2);cursor:pointer;font-size:13px;
+  transition:.16s;position:relative;user-select:none;
+}
+.nav-item svg{opacity:.8;flex:none}
+.nav-item:hover{background:var(--surface2);color:var(--fg)}
+.nav-item.on{background:linear-gradient(90deg,rgba(90,162,255,.16),rgba(90,162,255,.045));color:var(--accent);font-weight:560}
+:root[data-theme="light"] .nav-item.on{background:linear-gradient(90deg,rgba(47,125,225,.12),rgba(47,125,225,.03))}
+.nav-item.on::before{content:'';position:absolute;left:-12px;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}
+.nav-item .cnt{margin-left:auto;font:11px var(--mono);color:var(--fg3);background:var(--surface3);padding:1px 6px;border-radius:5px}
+.side-foot{margin-top:auto;border-top:1px solid var(--line);padding:14px 10px 2px}
+.side-stat{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--fg2);margin-bottom:7px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--fg3);flex:none}
+.dot.live{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.15);animation:pulse 2.4s infinite}
+.dot.err{background:var(--bad)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.side-foot small{display:block;color:var(--fg3);font:10.5px var(--mono);line-height:1.7}
+
+/* ================= 主区 ================= */
+.main{min-width:0;padding:0 26px 44px;max-width:1660px}
+.topbar{
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:19px 0 18px;border-bottom:1px solid var(--line);margin-bottom:20px;
+}
+.page-head{min-width:0;margin-right:auto}
+.page-head h1{font-size:19px;font-weight:660;letter-spacing:-.2px;display:flex;align-items:center;gap:9px}
+.page-head p{color:var(--fg3);font-size:11.5px;margin-top:3px}
+.top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.segmented{display:flex;background:var(--surface);border:1px solid var(--line);border-radius:var(--rs);padding:3px;gap:2px}
+.segmented button{background:none;border:0;color:var(--fg2);padding:5px 11px;border-radius:6px;cursor:pointer;font-size:12px;transition:.15s;white-space:nowrap}
+.segmented button:hover{color:var(--fg);background:var(--surface2)}
+.segmented button.on{background:var(--accent);color:#fff;font-weight:560}
+.btn,.icon-btn{
+  background:var(--surface);border:1px solid var(--line);color:var(--fg2);
+  border-radius:var(--rs);cursor:pointer;transition:.15s;display:inline-flex;
+  align-items:center;justify-content:center;gap:6px;font-size:12px;
+}
+.btn{padding:7px 12px}.icon-btn{width:33px;height:33px;flex:none}
+.btn:hover,.icon-btn:hover{background:var(--surface2);color:var(--fg);border-color:var(--line2)}
+.btn:active,.icon-btn:active{transform:scale(.96)}
+.btn.on{color:var(--accent);border-color:var(--accent)}
+.crumb{display:flex;align-items:center;gap:7px;color:var(--fg3);font-size:11.5px;margin-bottom:12px}
+.crumb a{color:var(--accent);cursor:pointer}
+.crumb a:hover{text-decoration:underline}
+
+/* ================= 视图 / 卡片 ================= */
+.view{display:none;animation:fadeUp .28s ease both}
+.view.on{display:block}
+@keyframes fadeUp{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:13px;margin-bottom:16px}
+.kpi{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  padding:14px 15px 12px;position:relative;overflow:hidden;box-shadow:var(--shadow);
+  transition:border-color .2s,transform .2s;
+}
+.kpi:hover{border-color:var(--line2);transform:translateY(-1px)}
+.kpi::before{content:'';position:absolute;left:0;top:0;right:0;height:2px;background:var(--accent);opacity:.75}
+.kpi.k-ok::before{background:var(--ok)}.kpi.k-warn::before{background:var(--warn)}
+.kpi.k-bad::before{background:var(--bad)}.kpi.k-teal::before{background:var(--teal)}
+.kpi-top{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+.kpi-ic{width:25px;height:25px;border-radius:7px;display:grid;place-items:center;background:var(--surface3);color:var(--accent);flex:none}
+.kpi.k-ok .kpi-ic{color:var(--ok)}.kpi.k-warn .kpi-ic{color:var(--warn)}
+.kpi.k-bad .kpi-ic{color:var(--bad)}.kpi.k-teal .kpi-ic{color:var(--teal)}
+.kpi-label{color:var(--fg2);font-size:11.5px;font-weight:520}
+.kpi-value{font:600 24px/1.15 var(--mono);font-variant-numeric:tabular-nums;
+           letter-spacing:-.7px;white-space:nowrap}
+/* 值太长时按视觉宽度自动缩字号，避免 "2.24G / 148.81M" 被拆成两行 */
+.kpi-value.compact{font-size:19px;letter-spacing:-.4px}
+.kpi-value.tiny{font-size:16px;letter-spacing:-.2px}
+.kpi-unit{font-size:11.5px;color:var(--fg3);font-weight:400;margin-left:3px;letter-spacing:0}
+.kpi-foot{color:var(--fg3);font-size:10.5px;margin-top:6px;
+          line-height:1.4;min-height:30px;overflow-wrap:anywhere}
+/* 右下角有迷你趋势线时给文字让位，两者不再叠在一起 */
+.kpi-foot.with-spark{padding-right:82px}
+.kpi-spark{position:absolute;right:10px;bottom:9px;width:76px;height:24px;opacity:.8}
+
+.panel{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  margin-bottom:16px;overflow:hidden;box-shadow:var(--shadow);
+}
+.panel-h{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line);min-height:48px;flex-wrap:wrap}
+.panel-t{font-size:13px;font-weight:620;display:flex;align-items:center;gap:8px}
+.panel-t svg{color:var(--accent)}
+.panel-sub{color:var(--fg3);font-size:11px;margin-left:auto;font-family:var(--mono)}
+.panel-b{padding:6px 0 8px}
+.panel-b.pad{padding:15px 16px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid2>.panel{margin-bottom:0}
+.grid-wrap{margin-bottom:16px}
+.hint{color:var(--fg3);font-size:11px;line-height:1.7}
+.empty{color:var(--fg3);text-align:center;padding:32px 16px;font-size:12.5px}
+
+/* ================= 列表行 ================= */
+.rows{padding:0 0 2px}
+.rhead,.row{display:grid;align-items:center;gap:12px;padding:0 16px}
+.rhead{padding-top:7px;padding-bottom:8px;color:var(--fg3);font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;font-weight:600}
+.row{padding-top:9px;padding-bottom:9px;border-top:1px solid var(--line);transition:background .13s;min-height:42px}
+.row:hover{background:var(--surface2)}
+.row.click{cursor:pointer}
+.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;white-space:nowrap}
+.key{font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.ip{font-family:var(--mono);font-size:11.5px;color:var(--fg2);white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sub{font-size:10.5px;color:var(--fg3);margin-top:2px;overflow:hidden;
+     text-overflow:ellipsis;white-space:nowrap}
+/* 说明文字允许换行，别把结论截成半句 */
+.sub.wrap{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.45}
+.nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.bar{height:4px;background:var(--surface3);border-radius:3px;overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .4s}
+.bar.g i{background:linear-gradient(90deg,var(--teal),var(--ok))}
+.bar.r i{background:linear-gradient(90deg,var(--warn),var(--bad))}
+.pill{display:inline-flex;align-items:center;justify-content:center;padding:2px 7px;border-radius:6px;font:500 10.5px var(--mono);white-space:nowrap;line-height:1.55;min-width:34px}
+.pill.ok{background:rgba(63,185,80,.14);color:var(--ok)}
+.pill.warn{background:rgba(227,179,65,.14);color:var(--warn)}
+.pill.bad{background:rgba(240,101,95,.14);color:var(--bad)}
+.pill.na{background:var(--surface3);color:var(--fg3)}
+.pill.info{background:rgba(90,162,255,.13);color:var(--accent)}
+.pill.teal{background:rgba(46,196,166,.14);color:var(--teal)}
+.pill.plain{background:var(--surface3);color:var(--fg2);font-family:inherit;font-size:10.5px;min-width:0}
+.link{color:var(--accent);cursor:pointer}
+.link:hover{text-decoration:underline}
+
+/* 设备单元 */
+.devc{display:flex;align-items:center;gap:10px;min-width:0}
+.av{
+  width:30px;height:30px;border-radius:9px;flex:none;display:grid;place-items:center;
+  border:1px solid rgba(255,255,255,.06);
+}
+.av.sm{width:26px;height:26px;border-radius:8px}
+.avatar-tx{font:650 12px var(--mono)}
+.g-cidr,.g-host{grid-template-columns:minmax(0,1fr) 58px 84px}
+.g-probe{grid-template-columns:minmax(0,1fr) 70px 66px 78px}
+.g-dns{grid-template-columns:minmax(0,1fr) 58px 78px 72px 62px}
+.g-top{grid-template-columns:minmax(0,1fr) 68px 78px}
+.g-traf{grid-template-columns:minmax(0,1fr) 62px 78px 78px}
+.g-log{grid-template-columns:82px minmax(0,1.1fr) minmax(0,1.2fr) 54px 78px 66px}
+.g-devlist{grid-template-columns:minmax(0,1.5fr) 116px 74px 74px 84px 96px 90px}
+
+/* ================= 图表 ================= */
+.chartbox{padding:14px 16px 10px}
+.bars{display:flex;align-items:flex-end;gap:2px;height:132px;border-bottom:1px solid var(--line);padding-bottom:1px}
+.bcol{flex:1;min-width:2px;height:100%;display:flex;flex-direction:column;justify-content:flex-end;position:relative;cursor:default}
+.bseg{width:100%;border-radius:2px 2px 0 0;transition:opacity .15s}
+.bcol:hover .bseg{opacity:.75}
+.bcol .tip{
+  display:none;position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
+  background:var(--surface3);border:1px solid var(--line2);color:var(--fg);
+  padding:5px 8px;border-radius:6px;font:10.5px var(--mono);white-space:nowrap;z-index:5;
+  box-shadow:var(--shadow);margin-bottom:5px;
+}
+.bcol:hover .tip{display:block}
+.baxis{display:flex;justify-content:space-between;color:var(--fg3);font:10px var(--mono);margin-top:7px}
+.ylegend{display:flex;gap:14px;font:10.5px var(--mono);color:var(--fg2);margin-bottom:8px;align-items:center}
+.ylegend span{display:flex;align-items:center;gap:5px}
+.ylegend i{width:8px;height:8px;border-radius:2px;display:block}
+.sparkline{width:100%;height:26px;display:block}
+
+/* 环形图 */
+.donut-box{display:flex;align-items:center;gap:20px;padding:16px;flex-wrap:wrap}
+.donut{width:132px;height:132px;flex:none;position:relative}
+.donut svg{transform:rotate(-90deg)}
+/* grid 会把两行平分，数字偏上；改成 flex 让「数字 + 标签」作为整体居中 */
+.donut-c{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:1px;text-align:center}
+.donut-c b{display:block;font:600 20px var(--mono)}
+.donut-c small{display:block;color:var(--fg3);font-size:10px}
+.dlegend{flex:1;min-width:150px}
+.dlegend .li2{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:12px;border-bottom:1px solid var(--line)}
+.dlegend .li2:last-child{border:0}
+.dlegend .li2 i{width:9px;height:9px;border-radius:3px;flex:none}
+.dlegend .li2 b{margin-left:auto;font:12px var(--mono);font-weight:550}
+
+/* ================= 工具条 / 输入 ================= */
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:15px}
+.search{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:var(--rs);padding:0 11px;height:34px;min-width:230px;color:var(--fg3)}
+.search:focus-within{border-color:var(--accent);box-shadow:var(--glow)}
+.search input{border:0;outline:0;background:none;color:var(--fg);font-size:12.5px;width:100%;min-width:0}
+.search input::placeholder{color:var(--fg3)}
+.count{color:var(--fg2);font-size:11.5px}
+.count b{color:var(--fg);font-family:var(--mono)}
+
+/* 设备卡片网格 */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:13px}
+.dcard{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  padding:15px;cursor:pointer;transition:.18s;position:relative;overflow:hidden;
+  box-shadow:var(--shadow);
+}
+.dcard:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.18)}
+.dcard.inactive{opacity:.72}
+.dcard-top{display:flex;align-items:flex-start;gap:11px;margin-bottom:13px}
+.dcard-tx{min-width:0;flex:1}
+.dcard-nm{font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcard-ip{font:11px var(--mono);color:var(--fg3);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcard-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.dstat{background:var(--surface2);border-radius:8px;padding:8px 10px}
+.dstat .l{color:var(--fg3);font-size:10px;letter-spacing:.4px;text-transform:uppercase}
+.dstat .v{font:600 15px var(--mono);margin-top:2px}
+.dcard-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:11px}
+/* 翻页条：分页按钮沿用面板内的紧凑样式 */
+.pager{display:flex;align-items:center;gap:6px;justify-content:flex-end;
+  flex-wrap:wrap;padding:9px 16px 12px;border-top:1px solid var(--line)}
+.pager button{background:var(--surface2);border:1px solid var(--line);color:var(--fg2);
+  border-radius:6px;padding:3px 9px;font:11px var(--mono);cursor:pointer}
+.pager button:hover:not(:disabled){border-color:var(--accent);color:var(--fg)}
+.pager button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.pager button:disabled{opacity:.38;cursor:default}
+.pager .pg-info{margin-right:auto;color:var(--fg3);font-size:11px}
+.gsearch{display:flex;align-items:center;gap:7px;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--rs);padding:0 10px;height:33px;
+  color:var(--fg3);min-width:196px}
+.gsearch:focus-within{border-color:var(--accent);box-shadow:var(--glow)}
+.gsearch input{border:0;outline:0;background:none;color:var(--fg);font-size:12px;width:100%;min-width:0}
+.gsearch input::placeholder{color:var(--fg3)}
+.sel{background:var(--surface);border:1px solid var(--line);color:var(--fg2);
+  border-radius:var(--rs);height:34px;padding:0 10px;font-size:12px;cursor:pointer}
+
+/* 详情 hero */
+.hero{
+  background:linear-gradient(120deg,var(--surface),var(--surface2));
+  border:1px solid var(--line);border-radius:var(--r);padding:20px 22px;margin-bottom:16px;
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;box-shadow:var(--shadow);
+}
+.hero .av{width:56px;height:56px;border-radius:15px}
+.hero-tx{min-width:0;flex:1}
+.hero-tx h2{font-size:21px;font-weight:660;letter-spacing:-.3px;display:flex;
+  align-items:center;gap:9px;flex-wrap:wrap;word-break:break-word;min-width:0}
+.hero-tx .ip-line{font:12px var(--mono);color:var(--fg2);margin-top:5px;
+  display:flex;gap:0;flex-wrap:wrap}
+.hero-tx .ip-line span{padding-right:12px;margin-right:12px;
+  border-right:1px solid var(--line2);white-space:nowrap}
+.hero-tx .ip-line span:last-child{border-right:0;margin-right:0;padding-right:0}
+.hero-badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.hero-side{text-align:right;font:11px var(--mono);color:var(--fg3);line-height:1.9}
+.two-stat{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+
+/* 表格视图 */
+.tblhead,.tblrow{display:grid;align-items:center;gap:10px;padding:0 16px}
+.tblhead{color:var(--fg3);font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;padding-top:9px;padding-bottom:9px;font-weight:600}
+.tblrow{border-top:1px solid var(--line);padding-top:9px;padding-bottom:9px;min-height:42px;font-size:12px;transition:background .13s}
+.tblrow:hover{background:var(--surface2)}
+.g-log2{grid-template-columns:92px minmax(0,1.2fr) minmax(0,1.4fr) 52px 82px 64px 60px}
+.g-reach{grid-template-columns:minmax(0,1.4fr) 84px 62px 62px 112px 92px}
+.g-traffic{grid-template-columns:minmax(0,1.4fr) 88px 88px 88px minmax(0,1fr)}
+.g-host2{grid-template-columns:minmax(0,1fr) 104px 84px}
+.g-app{grid-template-columns:minmax(0,1fr) 68px 84px minmax(0,1fr)}
+.g-watch{grid-template-columns:minmax(0,1fr) 90px 100px 70px minmax(0,1.6fr)}
+.g-rank{grid-template-columns:minmax(0,1fr) 84px minmax(0,.8fr)}
+.g-d2dev{grid-template-columns:minmax(0,1.3fr) 62px 76px 76px 96px}
+.g-d2conn{grid-template-columns:100px minmax(0,1fr) minmax(0,1.2fr) 50px 62px 66px 66px}
+.g-d2dns{grid-template-columns:84px minmax(0,1fr) 74px 60px minmax(0,.9fr)}
+.g-d2item{grid-template-columns:minmax(0,1fr) 54px 54px 92px}
+/* 完整地址：允许换行，绝不截断 */
+.addr{font:10.5px/1.5 var(--mono);color:var(--fg2);white-space:normal;
+      word-break:break-all;min-width:0}
+.row[data-detail]{cursor:pointer}
+.g-tel{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) 62px 92px}
+.g-iface{grid-template-columns:minmax(0,1fr) 88px 88px 92px}
+.g-daily{grid-template-columns:minmax(0,1fr) 88px 88px 76px minmax(0,.8fr)}
+#since-custom{min-width:98px;cursor:pointer}
+.row.hl{background:rgba(46,196,166,.055)}
+.row.hl:hover{background:rgba(46,196,166,.1)}
+.rulecard{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  background:var(--surface2);border:1px solid var(--line);border-radius:var(--rs);
+  padding:9px 12px;margin-top:8px;font-size:12px}
+.rulecard b{font-family:var(--mono);font-size:12px}
+.syncbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:11.5px;color:var(--fg2)}
+
+/* 系统信息 */
+.kv{display:grid;grid-template-columns:170px 1fr;gap:0;font-size:12.5px}
+.kv>div{padding:9px 0;border-top:1px solid var(--line)}
+.kv>div:nth-child(odd){color:var(--fg2)}
+.kv>div:nth-child(even){font-family:var(--mono);word-break:break-all}
+.notecard{background:var(--surface2);border:1px solid var(--line);border-radius:var(--rs);padding:12px 14px;font-size:12px;color:var(--fg2);line-height:1.85}
+.notecard b{color:var(--fg)}
+code{background:var(--surface3);padding:1px 5px;border-radius:4px;font:11px var(--mono);color:var(--accent)}
+
+#err{display:none;background:rgba(240,101,95,.1);border:1px solid rgba(240,101,95,.4);color:var(--bad);padding:11px 14px;border-radius:var(--rs);margin-bottom:16px;font-size:12.5px}
+footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-family:var(--mono)}
+
+
+/* ===== 第九次迭代：收藏备注 / 告警 / 热力图 / 占比趋势 ===== */
+.topbar{position:relative}
+.star{display:inline-flex;align-items:center;justify-content:center;width:25px;height:25px;
+  border:0;background:none;color:var(--fg3);cursor:pointer;flex:none;padding:0}
+.star:hover{color:#f0b429}
+.star.on{color:#f0b429}
+.star svg{width:15px;height:15px;fill:currentColor;stroke:currentColor}
+.dcard-note{font-size:10.5px;color:var(--accent);margin-top:3px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.note-box{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:0 0 14px;
+  padding:9px 12px;background:var(--surface2);border:1px solid var(--line);border-radius:var(--rs)}
+.note-box label{font-size:11px;color:var(--fg3);letter-spacing:.5px;flex:none}
+.note-box input{flex:1;min-width:140px;background:var(--surface);border:1px solid var(--line);
+  color:var(--fg);border-radius:6px;padding:6px 9px;font-size:12px;outline:0}
+.note-box input:focus{border-color:var(--accent);box-shadow:var(--glow)}
+.note-tag{font-size:10.5px;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 站内告警 */
+.alert-btn{position:relative}
+.alert-dot{position:absolute;top:-4px;right:-4px;min-width:15px;height:15px;line-height:15px;
+  padding:0 3px;border-radius:8px;background:var(--bad);color:#fff;font-size:9px;
+  font-weight:700;text-align:center}
+.alert-pop{position:absolute;right:12px;top:56px;width:330px;max-width:calc(100vw - 24px);
+  background:var(--surface);border:1px solid var(--line2);border-radius:var(--rs);
+  box-shadow:0 14px 40px rgba(0,0,0,.34);padding:12px;z-index:60;display:none}
+.alert-pop.on{display:block}
+.alert-pop h4{margin:0 0 8px;font-size:12px;color:var(--fg)}
+.alert-row{display:flex;gap:9px;align-items:flex-start;padding:8px 0;
+  border-top:1px solid var(--line);font-size:11.5px;line-height:1.65}
+.alert-row .pill{flex:none}
+.alert-strip{margin-bottom:14px;padding:9px 13px;border-radius:var(--rs);
+  background:var(--surface2);border:1px solid var(--line);font-size:12px;line-height:1.9}
+.alert-strip b{color:var(--fg)}
+.alert-strip:empty{display:none}
+/* 7×24 活动热力图 */
+.heat-grid{display:grid;grid-template-columns:34px repeat(24,minmax(0,1fr));gap:2px;align-items:center}
+.heat-lab{font-size:9.5px;color:var(--fg3);text-align:right;padding-right:4px;white-space:nowrap}
+.heat-cell{aspect-ratio:1/1;min-height:9px;border-radius:2px;background:var(--surface3)}
+.heat-axis{display:grid;grid-template-columns:34px repeat(24,minmax(0,1fr));gap:2px;margin-top:4px}
+.heat-axis span{font-size:8px;color:var(--fg3);text-align:center}
+/* 拦截占比趋势 */
+.pct-chart{display:flex;align-items:flex-end;gap:2px;height:76px;padding:8px 2px 0}
+.pct-col{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;height:100%}
+.pct-bar{width:100%;border-radius:2px 2px 0 0;background:var(--accent)}
+
+/* ================= 响应式 ================= */
+@media (max-width:1250px){
+  .grid2{grid-template-columns:1fr}
+  .g-log2{grid-template-columns:84px minmax(0,1fr) minmax(0,1.1fr) 46px 74px 58px 54px}
+  .g-d2conn{grid-template-columns:88px minmax(0,1fr) minmax(0,1.1fr) 46px 56px 62px 62px}
+  .g-reach{grid-template-columns:minmax(0,1.2fr) 76px 56px 56px 100px 84px}
+  .g-log{grid-template-columns:74px minmax(0,1fr) minmax(0,1.2fr) 48px 72px}
+  .g-log .c-ans{display:none}
+  .g-devlist{grid-template-columns:minmax(0,1.4fr) 108px 70px 70px 84px 88px}
+  .g-devlist .c-bw{display:none}
+}
+@media (max-width:900px){
+  /* 1fr 的最小尺寸是 min-content：侧栏横向导航会把它撑宽，
+     连带 main 一起超出视口，右侧内容被裁。必须显式 minmax(0,1fr)。 */
+  .app{grid-template-columns:minmax(0,1fr)}
+  .side{min-width:0;max-width:100vw}
+  .main{min-width:0;max-width:100vw}
+  .side{position:static;height:auto;flex-direction:row;align-items:center;overflow-x:auto;
+        padding:10px 12px;gap:4px;border-right:0;border-bottom:1px solid var(--line);
+        -webkit-overflow-scrolling:touch}
+  .brand{padding:0 10px 0 0;flex:none}.brand-tx{display:none}
+  .nav-cap,.side-foot{display:none}
+  .nav-item{white-space:nowrap;padding:7px 10px;margin:0}
+  .nav-item.on::before{display:none}
+  .nav-item .cnt{display:none}
+  .main{padding:0 12px 34px}
+  .topbar{padding:14px 0 12px;gap:10px}
+  .page-head h1{font-size:17px}
+  .kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px}
+  .toolbar>span.count{flex:1 1 auto;min-width:0;white-space:normal}
+  .toolbar>.segmented{flex:none}
+  .kpi{padding:11px 12px 10px}
+  .kpi-value{font-size:19px}
+  .kpi-spark{display:none}
+  .grid2{grid-template-columns:1fr;gap:12px}
+  .cards{grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px}
+  .panel-h{padding:11px 13px}
+  .panel-sub{margin-left:0;width:100%;font-size:10.5px}
+  .chartbox{padding:12px 12px 8px}
+  .bars{height:112px}
+  .donut-box{gap:12px}
+  .donut,.donut svg{width:110px;height:110px}
+  .toolbar{gap:8px}
+  .search{min-width:0;flex:1 1 100%}
+  .gsearch{flex:1 1 100%;min-width:0}
+  .segmented button{padding:5px 9px;font-size:11.5px}
+  .hero{padding:15px;gap:12px}
+  .hero .av{width:44px;height:44px}
+  .hero-tx h2{font-size:18px}
+  .hero-side{text-align:left;width:100%}
+  .kv{grid-template-columns:1fr}
+  .kv>div:nth-child(odd){color:var(--fg3);font-size:11px;padding-bottom:0;border-top:0}
+  .kv>div:nth-child(even){border-top:1px solid var(--line);padding-top:2px;padding-bottom:8px}
+}
+
+/* 窄屏表格改卡片：每格都带表头标签，一列不藏，信息完整。
+   data-label 由 JS 从 .rhead 自动提取，不用改各行的生成代码。 */
+@media (max-width:760px){
+  .rows .rhead{display:none !important}
+  /* 部分行带内联 grid-template-columns（总览设备榜、变更历史、规则清单），
+     必须 !important 才能覆盖，否则窄屏仍是多列挤在一起 */
+  .rows .row{display:grid;grid-template-columns:1fr 1fr !important;gap:7px 12px;
+             padding:11px 13px;align-items:start}
+  .rows .row>div{min-width:0;max-width:100%;text-align:left;display:block}
+  .rows .row>div::before{content:attr(data-label);display:block;color:var(--fg3);
+      font-size:10px;letter-spacing:.4px;margin-bottom:2px;font-weight:500}
+  .rows .row>div:first-child{grid-column:1/-1}
+  .rows .row>div.num{text-align:left;font-size:12.5px}
+  .rows .row .key,.rows .row .nm,.rows .row .ip,.rows .row .sub{
+      white-space:normal;overflow:visible;text-overflow:clip;word-break:break-all;font-size:12px}
+  .rows .row .bar{margin-top:5px}
+  .rows .row>div.devc{display:flex;align-items:center}
+  .rows .row>div.devc::before{content:none}
+  .rows .row>div.cellbar{display:flex}
+  .g-top,.g-cidr,.g-host,.g-probe,.g-dns,.g-traf,.g-log,.g-log2,
+  .g-devlist,.g-reach,.g-traffic,.g-host2,.g-app,.g-watch,.g-tel{
+      grid-template-columns:1fr 1fr}
+  .empty{padding:22px 12px}
+}
+
+/* 窄屏：热力图 24 列仍完整显示，只压缩间距，不隐藏任何格子 */
+@media (max-width:760px){
+  .heat-grid,.heat-axis{grid-template-columns:27px repeat(24,minmax(0,1fr));gap:1px}
+  .heat-lab{font-size:8.5px;padding-right:2px}
+  .heat-cell{min-height:7px;border-radius:1px}
+  .alert-pop{right:8px;top:52px;width:calc(100vw - 16px)}
+  .note-box input{min-width:100%}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ================= 侧边栏 ================= -->
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-mark" id="brand-mark"></div>
+      <div class="brand-tx"><b>netmon</b><small>NETWORK MONITOR</small></div>
+    </div>
+    <div class="nav-cap">概览</div>
+    <div class="nav-item on" data-nav="overview" id="nav-overview"></div>
+    <div class="nav-item" data-nav="clients" id="nav-clients"></div>
+    <div class="nav-cap">分析</div>
+    <div class="nav-item" data-nav="blocks" id="nav-blocks"></div>
+    <div class="nav-item" data-nav="traffic" id="nav-traffic"></div>
+    <div class="nav-item" data-nav="queries" id="nav-queries"></div>
+    <div class="nav-item" data-nav="domains" id="nav-domains"></div>
+    <div class="nav-cap">系统</div>
+    <div class="nav-item" data-nav="system" id="nav-system"></div>
+    <div class="side-foot">
+      <div class="side-stat"><span class="dot" id="dot"></span><span id="status-text">连接中</span></div>
+      <small id="side-info">netmon · <span id="side-host">192.168.1.1</span><br><span id="side-update">—</span></small>
+    </div>
+  </aside>
+
+  <!-- ================= 主内容 ================= -->
+  <main class="main">
+    <div class="topbar">
+      <div class="page-head">
+        <h1 id="page-title">总览</h1>
+        <p id="page-sub">全网 DNS 与流量概况</p>
+      </div>
+      <div class="top-actions">
+        <label class="gsearch" id="global-search"></label>
+        <div class="segmented" id="since-box">
+          <button data-since="3600">1 小时</button>
+          <button data-since="86400" class="on">24 小时</button>
+          <button data-since="604800">7 天</button>
+        </div>
+        <select class="sel" id="theme-box" title="界面主题">
+          <option value="dark">深色</option>
+          <option value="light">浅色</option>
+          <option value="midnight">午夜蓝</option>
+          <option value="nord">北欧灰蓝</option>
+          <option value="solar">暖阳</option>
+          <option value="contrast">高对比</option>
+        </select>
+        <button class="icon-btn alert-btn" id="btn-alerts" title="站内告警"></button>
+        <div class="alert-pop" id="alert-pop"></div>
+        <button class="icon-btn on" id="btn-auto" title="自动刷新开关"></button>
+        <select class="sel" id="since-custom" title="更多时间范围">
+          <option value="">更多范围</option>
+          <option value="21600">6 小时</option>
+          <option value="43200">12 小时</option>
+          <option value="172800">2 天</option>
+          <option value="259200">3 天</option>
+          <option value="1209600">14 天</option>
+          <option value="2592000">30 天</option>
+        </select>
+        <button class="btn" id="btn-export" title="把当前视图导出为 CSV"></button>
+        <button class="btn" id="btn-refresh"></button>
+      </div>
+    </div>
+
+    <div id="err"></div>
+
+    <!-- ---------- 总览 ---------- -->
+    <section class="view on" id="v-overview">
+      <div class="alert-strip" id="alert-strip"></div>
+      <div class="notecard" id="digest" style="margin-bottom:14px"></div>
+      <div class="kpis" id="kpi-grid"></div>
+      <div class="grid2 grid-wrap">
+        <div class="panel" style="margin-bottom:0">
+          <div class="panel-h"><div class="panel-t" id="t-dnschart"></div>
+            <span class="panel-sub" id="dnschart-sub">—</span></div>
+          <div class="chartbox">
+            <div class="ylegend"><span><i style="background:var(--accent)"></i>查询</span>
+              <span><i style="background:var(--bad)"></i>异常</span>
+              <span style="margin-left:auto;color:var(--fg3)" id="dnschart-total"></span></div>
+            <div class="bars" id="chart-dns"></div>
+            <div class="baxis" id="axis-dns"></div>
+          </div>
+        </div>
+        <div class="panel" style="margin-bottom:0">
+          <div class="panel-h"><div class="panel-t" id="t-flowchart"></div>
+            <span class="panel-sub" id="flowchart-sub">—</span></div>
+          <div class="chartbox">
+            <div class="ylegend"><span><i style="background:var(--down)"></i>下行</span>
+              <span><i style="background:var(--up)"></i>上行</span>
+              <span style="margin-left:auto;color:var(--fg3)" id="flowchart-total"></span></div>
+            <div class="bars" id="chart-traffic"></div>
+            <div class="baxis" id="axis-traffic"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-clients"></div>
+            <span class="panel-sub"><a class="link" id="go-clients">全部设备 →</a></span></div>
+          <div class="panel-b"><div class="rows"><div class="rhead g-dev" style="grid-template-columns:minmax(0,1fr) 76px 76px"><div>设备</div><div class="num">查询</div><div class="num">占比</div></div><div id="ov-clients"></div></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-domains"></div>
+            <span class="panel-sub"><a class="link" id="go-domains">完整排行 →</a></span></div>
+          <div class="panel-b"><div class="rows"><div class="rhead g-top"><div>域名</div><div class="num">查询</div><div class="num">成功率</div></div><div id="ov-domains"></div></div></div>
+        </div>
+      </div>
+
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-blocksum"></div>
+            <span class="panel-sub"><a class="link" id="go-blocks">拦截详情 →</a></span></div>
+          <div class="panel-b"><div class="rows"><div class="rhead g-top"><div>被拦截域名</div><div class="num">次数</div><div class="num">占比</div></div><div id="ov-blocked"></div></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-recent"></div>
+            <span class="panel-sub"><a class="link" id="go-queries">查询日志 →</a></span></div>
+          <div class="panel-b"><div class="rows"><div class="rhead g-log"><div>时间</div><div>客户端</div><div>域名</div><div>类型</div><div class="num">状态</div><div class="num c-ans">耗时</div></div><div id="ov-recent"></div></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-heat"></div>
+          <span class="panel-sub" id="heat-sub">—</span></div>
+        <div class="panel-b pad">
+          <div class="heat-grid" id="heat-grid"></div>
+          <div class="heat-axis" id="heat-axis"></div>
+          <div class="notecard" style="margin-top:11px;font-size:11.5px">
+            按小时统计最近 7 天的 DNS 查询活跃度，颜色越深表示查询越多；空白表示这段时间还没有数据。
+            横轴是一天中的小时，纵轴是星期，时区跟随浏览器。数据来自已聚合的小时记录，切上方时间范围不会改变这里。
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 客户端 ---------- -->
+    <section class="view" id="v-clients">
+      <div class="toolbar">
+        <label class="search" id="search-clients"></label>
+        <div class="segmented" id="filter-box">
+          <button data-f="all" class="on">全部</button>
+          <button data-f="active">仅活跃</button>
+          <button data-f="static">静态分配</button>
+          <button data-f="auto">未登记</button>
+          <button data-f="fav">只看收藏</button>
+        </div>
+        <div class="segmented" id="layout-box">
+          <button data-l="card" class="on">卡片</button>
+          <button data-l="list">列表</button>
+        </div>
+        <select class="sel" id="csort-box" title="排序方式">
+          <option value="queries">按查询数</option>
+          <option value="name">按名称</option>
+          <option value="traffic">按流量</option>
+          <option value="recent">按最近活跃</option>
+        </select>
+        <span class="count" id="clients-count">—</span>
+      </div>
+      <div class="cards" id="clients-grid"></div>
+      <div class="panel" id="clients-table" style="display:none">
+        <div class="panel-b"><div class="rows">
+          <div class="rhead g-devlist"><div>设备</div><div class="c-ip">IP 地址</div><div class="num">查询</div><div class="num c-hosts">域名</div><div class="num c-rate">成功率</div><div class="num c-bw">流量</div><div class="num">最近活跃</div></div>
+          <div id="clients-list"></div>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ---------- 设备详情 ---------- -->
+    <section class="view" id="v-client">
+      <div class="crumb"><a id="crumb-back">客户端</a><span>›</span><span id="crumb-ip">—</span></div>
+      <div class="hero" id="detail-head"></div>
+      <div class="note-box" id="client-note"></div>
+      <div class="kpis" id="detail-kpi"></div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-detail-timeline"></div><span class="panel-sub" id="detail-timeline-sub">—</span></div>
+        <div class="chartbox">
+          <div class="ylegend"><span><i style="background:var(--accent)"></i>查询</span><span><i style="background:var(--bad)"></i>异常</span></div>
+          <div class="bars" id="detail-timeline"></div><div class="baxis" id="detail-axis"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-detail-flow"></div>
+          <span class="panel-sub" id="detail-flow-sub">—</span></div>
+        <div class="chartbox">
+          <div class="ylegend"><span><i style="background:var(--down)"></i>下行</span>
+            <span><i style="background:var(--up)"></i>上行</span>
+            <span style="margin-left:auto;color:var(--fg3)" id="detail-flow-total"></span></div>
+          <div class="bars" id="detail-flow"></div><div class="baxis" id="detail-flow-axis"></div>
+        </div>
+      </div>
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-detail-domains"></div><span class="panel-sub">按查询次数</span></div>
+          <div class="panel-b"><div class="rows"><div class="rhead g-top"><div>域名</div><div class="num">次数</div><div class="num">状态</div></div><div id="detail-domains"></div></div></div>
+          <div class="pager" id="pg-domains"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-detail-dist"></div><span class="panel-sub">应答 / 查询类型</span></div>
+          <div class="donut-box"><div class="donut" id="detail-donut"></div><div class="dlegend" id="detail-legend"></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-detail-traffic"></div><span class="panel-sub">仅统计 IPv4 发起的连接</span></div>
+        <div class="panel-b"><div class="rows"><div class="rhead g-traf"><div>目的地</div><div class="num">连接</div><div class="num c-out">上行</div><div class="num">下行</div></div><div id="detail-traffic"></div></div></div>
+        <div class="pager" id="pg-traffic"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-detail-recent"></div><span class="panel-sub" id="detail-recent-sub">—</span></div>
+        <div style="padding:10px 16px 0"><label class="search" id="search-detail" style="max-width:320px"></label></div>
+        <div class="panel-b"><div class="rows"><div class="rhead g-log2"><div>时间</div><div>域名</div><div>应答 IP</div><div>类型</div><div>状态</div><div class="num c-ms">耗时</div><div class="num c-ans">应答数</div></div><div id="detail-recent"></div></div></div>
+        <div class="pager" id="pg-recent"></div>
+      </div>
+    </section>
+
+    <!-- ---------- 通用条目详情（所有榜单点进去） ---------- -->
+    <section class="view" id="v-detail">
+      <div class="crumb"><a id="detail-back">返回</a><span>›</span><span id="detail-crumb">—</span></div>
+      <div class="hero" id="d2-head"></div>
+      <div class="note-box" id="detail-note"></div>
+      <div class="kpis" id="d2-kpi"></div>
+      <div class="panel" id="p-d2-timeline">
+        <div class="panel-h"><div class="panel-t" id="t-d2-timeline"></div>
+          <span class="panel-sub" id="d2-timeline-sub">—</span></div>
+        <div class="chartbox">
+          <div class="ylegend"><span><i style="background:var(--down)"></i>下行</span>
+            <span><i style="background:var(--up)"></i>上行</span></div>
+          <div class="bars" id="d2-timeline"></div><div class="baxis" id="d2-axis"></div>
+        </div>
+      </div>
+      <div class="panel" id="p-d2-devices">
+        <div class="panel-h"><div class="panel-t" id="t-d2-devices"></div>
+          <span class="panel-sub">点设备名可继续查看该设备详情</span></div>
+        <div class="panel-b"><div class="rows">
+          <div class="rhead g-d2dev"><div>设备</div><div class="num">次数</div>
+            <div class="num">上行</div><div class="num">下行</div><div class="num">最近</div></div>
+          <div id="d2-devices"></div></div></div>
+      </div>
+      <div class="panel" id="p-d2-conns">
+        <div class="panel-h"><div class="panel-t" id="t-d2-conns"></div>
+          <span class="panel-sub" id="d2-conns-sub">最近 60 条</span></div>
+        <div class="panel-b"><div class="rows">
+          <div class="rhead g-d2conn"><div>连接时间</div><div>设备</div><div>目的地</div>
+            <div class="num">端口</div><div class="num">时长</div>
+            <div class="num">上行</div><div class="num">下行</div></div>
+          <div id="d2-conns"></div></div></div>
+      </div>
+      <div class="grid2 grid-wrap" id="d2-grid2">
+        <div class="panel" id="p-d2-dns">
+          <div class="panel-h"><div class="panel-t" id="t-d2-dns"></div>
+            <span class="panel-sub">最近 60 条</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead g-d2dns"><div>时间</div><div>设备</div><div>状态</div>
+              <div class="num">耗时</div><div class="num">应答</div></div>
+            <div id="d2-dns"></div></div></div>
+        </div>
+      </div>
+      <div class="notecard" id="d2-note"></div>
+    </section>
+
+    <!-- ---------- 拦截记录 ---------- -->
+    <section class="view" id="v-blocks">
+      <div class="kpis" id="blocks-kpi"></div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-blocks-hp"></div>
+          <span class="panel-sub" id="blocks-fp">—</span></div>
+        <div class="panel-b pad">
+          <div class="syncbar" id="blocks-hpinfo"></div>
+          <div id="blocks-rules"></div>
+        </div>
+      </div>
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-blocks-blocked"></div>
+            <span class="panel-sub">命中 homeproxy 拦截规则</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead g-top"><div>域名</div><div class="num">次数</div><div class="num">规则</div></div>
+            <div id="blocks-blocked"></div></div>
+            <div class="pager" id="pg-blocked"></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-blocks-unresolved"></div>
+            <span class="panel-sub">排除拦截与本地域</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead g-top"><div>域名</div><div class="num">次数</div><div class="num">占比</div></div>
+            <div id="blocks-unresolved"></div></div>
+            <div class="pager" id="pg-unresolved"></div></div>
+        </div>
+      </div>
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-block-trend"></div>
+            <span class="panel-sub">按小时看拦截占 DNS 查询的比例</span></div>
+          <div class="panel-b pad">
+            <div class="pct-chart" id="block-trend"></div>
+            <div class="notecard" id="block-trend-note" style="margin-top:9px;font-size:11.5px">—</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-block-dev"></div>
+            <span class="panel-sub">按命中拦截规则的查询次数</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead g-top"><div>设备</div><div class="num">拦截次数</div><div class="num">占比</div></div>
+            <div id="block-dev"></div></div>
+            <div class="pager" id="pg-blockdev"></div></div>
+        </div>
+      </div>
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-blocks-events"></div>
+            <span class="panel-sub">规则变更历史</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead" style="grid-template-columns:126px 1fr 58px 58px"><div>时间</div>
+              <div>变更内容</div><div class="num">规则数</div><div class="num">条目数</div></div>
+            <div id="blocks-events"></div></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-blocks-note"></div></div>
+          <div class="panel-b pad"><div class="notecard" id="blocks-note"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 流量排行 ---------- -->
+    <section class="view" id="v-traffic">
+      <div class="toolbar">
+        <span class="count">完整排行按</span>
+        <div class="segmented" id="sort-box">
+          <button data-s="total" class="on">合计流量</button>
+          <button data-s="down">只看下载</button>
+          <button data-s="up">只看上传</button>
+        </div>
+        <span class="count">下方还有下载、上传独立榜单</span>
+      </div>
+      <div class="kpis" id="traffic-kpi"></div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-traffic-dev"></div>
+          <span class="panel-sub">点击任一台看详情 · 上方切换排序</span></div>
+        <div class="panel-b"><div class="rows">
+          <div class="rhead g-traffic"><div>设备</div><div class="num">下载</div>
+            <div class="num">上传</div><div class="num">合计</div><div>占比</div></div>
+          <div id="traffic-dev"></div></div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-traffic-host"></div>
+          <span class="panel-sub">域名 / IP · 按流量</span></div>
+        <div class="panel-b"><div class="rows">
+          <div class="rhead g-host2"><div>目标</div><div class="num">连接</div><div class="num">流量</div></div>
+          <div id="traffic-host"></div></div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-traffic-cidr"></div>
+          <span class="panel-sub">按目的网段</span></div>
+        <div class="panel-b"><div class="rows">
+          <div class="rhead g-cidr"><div>网段</div><div class="num">连接</div><div class="num">下行</div></div>
+          <div id="traffic-cidr"></div></div></div>
+      </div>
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-rank-dev-down"></div>
+            <span class="panel-sub">下载（下行）最多的设备 · 点设备看详情</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead g-rank"><div>设备</div><div class="num">下载</div><div>占比</div></div>
+            <div id="rank-dev-down"></div></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-rank-dev-up"></div>
+            <span class="panel-sub">上传（上行）最多的设备 · 点设备看详情</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead g-rank"><div>设备</div><div class="num">上传</div><div>占比</div></div>
+            <div id="rank-dev-up"></div></div></div>
+        </div>
+      </div>
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-rank-host-down"></div>
+            <span class="panel-sub">下载（下行）最多的域名 / IP</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead g-rank"><div>域名 / IP</div><div class="num">下载</div><div>占比</div></div>
+            <div id="rank-host-down"></div></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-rank-host-up"></div>
+            <span class="panel-sub">上传（上行）最多的域名 / IP</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead g-rank"><div>域名 / IP</div><div class="num">上传</div><div>占比</div></div>
+            <div id="rank-host-up"></div></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-traffic-note"></div></div>
+        <div class="panel-b pad"><div class="notecard" id="traffic-note"></div></div>
+      </div>
+    </section>
+
+
+    <!-- ---------- 查询日志 ---------- -->
+    <section class="view" id="v-queries">
+      <div class="toolbar">
+        <label class="search" id="search-queries"></label>
+        <div class="segmented" id="cls-box">
+          <button data-c="all" class="on">全部</button><button data-c="ok">正常</button>
+          <button data-c="1">广告拦截</button><button data-c="2">本地域</button>
+          <button data-c="3">解析失败</button>
+        </div>
+        <div class="segmented" id="rcode-box">
+          <button data-r="all" class="on">全部</button><button data-r="0">正常</button>
+          <button data-r="3">NXDOMAIN</button><button data-r="5">REFUSED</button>
+        </div>
+        <span class="count" id="queries-count">—</span>
+      </div>
+      <div class="panel"><div class="panel-b"><div class="rows">
+        <div class="rhead g-log2"><div>时间</div><div>客户端</div><div>域名</div><div>类型</div><div>状态</div><div class="num c-ms">耗时</div><div class="num c-ans">应答</div></div>
+        <div id="queries-body"></div>
+      </div></div><div class="pager" id="pg-queries"></div></div>
+      <div class="notecard" id="queries-note"></div>
+    </section>
+
+    <!-- ---------- 域名排行 ---------- -->
+    <section class="view" id="v-domains">
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-dom-dns"></div><span class="panel-sub">按查询次数</span></div>
+          <div class="panel-b"><div class="rows"><div class="rhead g-dns"><div>域名</div><div class="num">次数</div><div class="num">成功率</div><div class="num">均耗时</div><div class="num c-note">异常</div></div><div id="domains-dns"></div></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-dom-traffic"></div><span class="panel-sub">按流量</span></div>
+          <div class="panel-b"><div class="rows"><div class="rhead g-top"><div>域名 / 目的 IP</div><div class="num">连接</div><div class="num">流量</div></div><div id="domains-traffic"></div></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-dom-cidr"></div><span class="panel-sub">按目的网段</span></div>
+        <div class="panel-b"><div class="rows"><div class="rhead g-cidr"><div>网段</div><div class="num">连接</div><div class="num">下行</div></div><div id="domains-cidr"></div></div></div>
+      </div>
+    </section>
+
+
+    <!-- ---------- 系统 ---------- -->
+    <section class="view" id="v-system">
+      <div class="kpis" id="sys-kpi"></div>
+      <div class="grid2 grid-wrap">
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-sys-iface"></div>
+            <span class="panel-sub">/proc/net/dev 累计值</span></div>
+          <div class="panel-b"><div class="rows">
+            <div class="rhead g-iface"><div>接口</div><div class="num">接收</div>
+              <div class="num">发送</div><div class="num">错误 / 丢弃</div></div>
+            <div id="sys-iface"></div></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><div class="panel-t" id="t-sys-conn"></div>
+            <span class="panel-sub">当前 conntrack 快照</span></div>
+          <div class="panel-b pad"><div class="kv" id="sys-conn"></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-sys-daily"></div>
+          <span class="panel-sub">每天全屋上下行总量 · 来自聚合表</span></div>
+        <div class="panel-b"><div class="rows">
+          <div class="rhead g-daily"><div>日期</div><div class="num">下载</div>
+            <div class="num">上传</div><div class="num">连接</div><div>占比</div></div>
+          <div id="sys-daily"></div></div></div>
+      </div>
+      <div class="grid2 grid-wrap">
+        <div class="panel"><div class="panel-h"><div class="panel-t" id="t-sys-db"></div></div>
+          <div class="panel-b pad"><div class="kv" id="system-db"></div></div></div>
+        <div class="panel"><div class="panel-h"><div class="panel-t" id="t-sys-src"></div></div>
+          <div class="panel-b pad"><div class="notecard" id="system-src"></div></div></div>
+      </div>
+      <div class="panel"><div class="panel-h"><div class="panel-t" id="t-sys-cmd"></div><span class="panel-sub">在路由器上执行</span></div>
+        <div class="panel-b pad"><div class="notecard" id="system-cmd"></div></div></div>
+    </section>
+
+    <footer>netmon · 被动旁路采集 · 页面版本 2026-11-08d · <span id="last-update">—</span></footer>
+  </main>
+</div>
+
+<script>
+'use strict';
+
+/* =====================================================================
+   图标（内联 SVG，无 CDN 依赖）
+   ===================================================================== */
+var PATHS = {
+  grid:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  list:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+  globe:'<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+  activity:'<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+  settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.35.4.65.74.85.3.17.65.26 1 .26H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+  moon:'<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+  refresh:'<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+  pause:'<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>',
+  play:'<polygon points="5 3 19 12 5 21 5 3"/>',
+  search:'<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  arrow:'<polyline points="9 18 15 12 9 6"/>',
+  shield:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  zap:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  clock:'<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  db:'<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
+  wifi:'<path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>',
+  download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+  alert:'<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  phone:'<rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>',
+  pc:'<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
+  nas:'<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/>',
+  camera:'<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>',
+  router:'<rect x="2" y="14" width="20" height="6" rx="2"/><path d="M6 14V9a6 6 0 0 1 12 0v5"/><line x1="6" y1="17" x2="6.01" y2="17"/><line x1="10" y1="17" x2="10.01" y2="17"/>',
+  tv:'<rect x="2" y="4" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="18" x2="12" y2="21"/>',
+  audio:'<rect x="4" y="2" width="16" height="20" rx="2"/><circle cx="12" cy="14" r="4"/><line x1="12" y1="6" x2="12.01" y2="6"/>',
+  printer:'<polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>',
+  tablet:'<rect x="4" y="2" width="16" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>',
+  iot:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.35.4.65.74.85.3.17.65.26 1 .26H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  cpu:'<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>',
+  chevron:'<polyline points="15 18 9 12 15 6"/>'
+};
+function icon(n, s){
+  s = s || 16;
+  return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(PATHS[n]||PATHS.cpu)+'</svg>';
+}
+var KIND_ICON = {phone:'phone',pc:'pc',nas:'nas',camera:'camera',router:'router',tv:'tv',
+                 audio:'audio',printer:'printer',tablet:'tablet',iot:'iot',other:'cpu'};
+var KIND_LABEL = {phone:'手机 / 平板',pc:'电脑',nas:'服务器 / NAS',camera:'摄像头',router:'路由 / AP',
+                  tv:'电视 / 盒子',audio:'音响',printer:'打印机',tablet:'平板',iot:'智能设备',other:'其他设备'};
+var SRC_LABEL = ['静态地址分配','DHCP 租约','MAC 反查','自动识别'];
+var RCODE = {
+  0:{t:'正常',c:'ok'}, 2:{t:'SERVFAIL',c:'bad'}, 3:{t:'NXDOMAIN',c:'warn'},
+  5:{t:'REFUSED',c:'bad'}
+};
+var QTYPE = {1:'A',2:'NS',5:'CNAME',6:'SOA',12:'PTR',15:'MX',16:'TXT',28:'AAAA',33:'SRV',65:'HTTPS',255:'ANY'};
+
+/* =====================================================================
+   工具
+   ===================================================================== */
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+function hb(b){ if(b==null||isNaN(b)) return '—';
+  var u=['B','K','M','G','T'],i=0;b=Number(b);
+  while(b>=1024&&i<4){b/=1024;i++;}
+  return (i===0?b.toFixed(0):b.toFixed(i>1?2:1))+u[i]; }
+function nf(n){ return Number(n||0).toLocaleString('zh-CN'); }
+function pct(v){ return (Number(v||0)*100).toFixed(0)+'%'; }
+function pad(n){ return n<10?'0'+n:''+n; }
+function tTime(ms){ var d=new Date(Number(ms));return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds()); }
+function tShort(ms){ var d=new Date(Number(ms));return pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes()); }
+function tFull(ms){ var d=new Date(Number(ms));
+  return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds()); }
+function ago(ms,now){ if(!ms) return '从未';
+  var s=Math.max(0,Math.floor(((now||Date.now())-Number(ms))/1000));
+  if(s<60) return s+' 秒前'; if(s<3600) return Math.floor(s/60)+' 分钟前';
+  if(s<86400) return Math.floor(s/3600)+' 小时前'; return Math.floor(s/86400)+' 天前'; }
+function rateCls(p){ return p>=95?'ok':p>=80?'warn':'bad'; }
+function latCls(ms){ return ms==null?'na':ms<50?'ok':ms<150?'warn':'bad'; }
+function lossCls(v){ if(v==null) return 'na';var p=v*100;return p<5?'ok':p<30?'warn':'bad'; }
+function pill(t,c){ return '<span class="pill '+(c||'na')+'">'+esc(t)+'</span>'; }
+function hue(s){ var h=0;s=String(s||'?');
+  for(var i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))&0xffff; return h%360; }
+function avatar(dev,small){
+  if(!dev) dev={};
+  var k=dev.kind||'other', h=hue(dev.ip||dev.display||'?');
+  var ic=icon(KIND_ICON[k]||'cpu',small?14:17);
+  return '<div class="av'+(small?' sm':'')+'" style="background:hsla('+h+',62%,55%,.15);color:hsl('+h+',70%,68%)">'+ic+'</div>';
+}
+function srcPill(src){ return pill(SRC_LABEL[src]||'未知',src>=3?'na':src===1?'teal':'info'); }
+function rcodePill(r){ var x=RCODE[r]||{t:'R'+r,c:'na'};return pill(x.t,x.c); }
+/* DNS 异常归因：1=广告/规则拦截 2=本地搜索域 3=真实解析失败 */
+var CLS = {1:{t:'广告拦截',c:'bad'}, 2:{t:'本地域',c:'na'}, 3:{t:'解析失败',c:'warn'}};
+function clsPill(cls,rule){
+  var x=CLS[cls]; if(!x) return '';
+  return '<span class="pill '+x.c+'"'+(rule?' title="'+esc(rule)+'"':'')+'>'+x.t+'</span>';
+}
+function qname(t){ return QTYPE[t]||('T'+t); }
+function kindLabel(k){ return KIND_LABEL[k]||'其他设备'; }
+function empty(t){ return '<div class="empty">'+esc(t||'暂无数据')+'</div>'; }
+function rowsHtml(id,arr,fn){ var e=$(id);if(!e)return;e.innerHTML=arr.length?arr.map(fn).join(''):empty(); }
+function setHead(id,txt,ic){ var e=$(id);if(e)e.innerHTML=icon(ic||'activity',15)+esc(txt); }
+function devLink(ip,name){ return '<span class="link" data-goto="'+esc(ip)+'">'+esc(name||ip)+'</span>'; }
+/* 通用下钻：任何榜单条目都能点开看关联设备、连接时间与分时段流量 */
+function dt(type,key){ return ' data-detail="'+esc(type)+'" data-dkey="'+esc(key==null?'':key)+'"'; }
+/* API 基址：面板有两种部署方式，靠页面路径区分，不依赖端口和域名。
+     - LuCI 同源：页面在 /netmon/ 下，由 uhttpd 主实例提供，
+       CGI 挂在同一实例的 /cgi-bin/netmon-data。
+     - 独立端口：页面就是站点根，CGI 是 /cgi-bin/data。
+   这样 HTTPS 下的 LuCI 也不会出现混合内容被拦的问题。 */
+function apiBase(){
+  return ((location.pathname||'').indexOf('/netmon/') === 0)
+    ? '/cgi-bin/netmon-data'
+    : '/cgi-bin/data';
+}
+var API = apiBase();
+
+/* 前端分页：数据已在内存里，翻页不额外请求 CGI（dashboard 单次约 3 秒） */
+function pager(id,total,page,size,key){
+  var pages=Math.max(1,Math.ceil(total/size));
+  if(page>pages)page=pages; if(page<1)page=1;
+  var e=$(id);
+  if(e){
+    if(total<=size){ e.innerHTML='<span class="pg-info">共 '+nf(total)+' 条</span>'; }
+    else{
+      var st=Math.max(1,Math.min(page-2,pages-4)),en=Math.min(pages,st+4),h='';
+      h+='<span class="pg-info">共 '+nf(total)+' 条 · 第 '+page+' / '+pages+' 页</span>';
+      h+='<button data-pg="'+key+':1"'+(page<=1?' disabled':'')+'>«</button>';
+      h+='<button data-pg="'+key+':'+(page-1)+'"'+(page<=1?' disabled':'')+'>上一页</button>';
+      for(var i=st;i<=en;i++)
+        h+='<button data-pg="'+key+':'+i+'"'+(i===page?' class="on"':'')+'>'+i+'</button>';
+      h+='<button data-pg="'+key+':'+(page+1)+'"'+(page>=pages?' disabled':'')+'>下一页</button>';
+      h+='<button data-pg="'+key+':'+pages+'"'+(page>=pages?' disabled':'')+'>»</button>';
+      e.innerHTML=h;
+    }
+  }
+  return page;
+}
+function pageSlice(arr,page,size){ return arr.slice((page-1)*size,page*size); }
+/* 顶栏全局搜索：IP 进设备/目标详情，域名进 DNS 详情，其余当日志关键词 */
+function globalSearch(q){
+  if(!q)return;
+  var isIP=/^[0-9a-fA-F.:]+$/.test(q)&&(q.indexOf('.')>=0||q.indexOf(':')>=0);
+  if(isIP){
+    var hit=(S.data&&S.data.devices||[]).filter(function(x){return x.device&&x.device.ip===q;})[0];
+    location.hash=hit?'#/client/'+q:'#/detail/host/'+encodeURIComponent(q);
+  } else if(q.indexOf('.')>0){ location.hash='#/detail/qname/'+encodeURIComponent(q); }
+  else { S.qq=q.toLowerCase(); location.hash='#/queries';
+         var e=$('search-queries-in'); if(e)e.value=q; }
+}
+
+/* SVG 迷你趋势线 */
+function spark(vals,color){
+  if(!vals||vals.length<2) return '';
+  var max=0; vals.forEach(function(v){if(v>max)max=v;}); if(max<=0)max=1;
+  var n=vals.length,pts=[],w=100,h=26;
+  vals.forEach(function(v,i){ pts.push((i/(n-1)*w).toFixed(1)+','+(h-(v/max)*(h-4)-1).toFixed(1)); });
+  /* CSS 变量在 SVG 的 presentation attribute 里不会被解析，必须放 style */
+  return '<svg class="sparkline" viewBox="0 0 100 26" preserveAspectRatio="none">'+
+    '<polyline points="'+pts.join(' ')+'" fill="none" style="stroke:'+color+'" stroke-width="1.6" '+
+    'stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>';
+}
+/* 柱状图：segs = [{v,color,label}]，返回 {html, axis} */
+function barChart(rows,fn,fmtTip){
+  var max=0;
+  rows.forEach(function(r){ var s=fn(r),t=0;s.forEach(function(x){t+=x.v||0;});if(t>max)max=t; });
+  if(max<=0)max=1;
+  var html=rows.map(function(r){
+    var segs=fn(r),tip=fmtTip?fmtTip(r):'',out='';
+    segs.forEach(function(s){
+      var hp=Math.max(0,Math.min(100,(s.v||0)/max*100));
+      if(hp<=0) return;
+      out+='<div class="bseg" style="height:'+hp.toFixed(2)+'%;background:'+s.color+';'+
+           (s.color2?'background:linear-gradient(180deg,'+s.color+','+s.color2+')':'')+'"></div>';
+    });
+    return '<div class="bcol" title="'+esc(tip)+'">'+out+
+      (tip?'<div class="tip">'+esc(tip)+'</div>':'')+'</div>';
+  }).join('');
+  return {html:html,max:max};
+}
+function axisLabels(rows,n){
+  if(!rows.length) return '<span>—</span><span>—</span>';
+  var step=Math.max(1,Math.ceil(rows.length/(n||6))),out=[];
+  for(var i=0;i<rows.length;i+=step) out.push('<span>'+esc(tShort(rows[i].t||0).slice(6))+'</span>');
+  if(rows.length>1) out.push('<span>'+esc(tShort(rows[rows.length-1].t||0).slice(6))+'</span>');
+  return out.join('');
+}
+function donut(parts,total,centerLabel){
+  var R=52,C=2*Math.PI*R,off=0,segs='';
+  parts.forEach(function(p){
+    var frac=total?p.n/total:0,len=frac*C;
+    if(len<=0)return;
+    segs+='<circle cx="60" cy="60" r="'+R+'" fill="none" style="stroke:'+p.color+'" stroke-width="13" '+
+      'stroke-dasharray="'+len.toFixed(2)+' '+(C-len).toFixed(2)+'" stroke-dashoffset="'+(-off).toFixed(2)+'"></circle>';
+    off+=len;
+  });
+  return '<svg viewBox="0 0 120 120" width="132" height="132">'+
+    '<circle cx="60" cy="60" r="'+R+'" fill="none" style="stroke:var(--surface3)" stroke-width="13"></circle>'+
+    segs+'</svg><div class="donut-c"><b>'+esc(centerLabel||nf(total))+'</b><small>次查询</small></div>';
+}
+
+
+/* ---------------- CSV 导出（纯前端，不额外请求 CGI） ---------------- */
+function csvCell(v){
+  var t=String(v==null?'':v);
+  return /[",\r\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t;
+}
+function csvDownload(name,head,rows){
+  var txt=[head].concat(rows).map(function(r){
+    return r.map(csvCell).join(',');}).join('\r\n');
+  try{
+    var blob=new Blob(['\ufeff'+txt],{type:'text/csv;charset=utf-8'});
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=name+'.csv';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+  }catch(e){ showErr('导出失败：'+e.message); }
+}
+function exportCurrent(){
+  var d=S.data||{},v=S.view,head=[],rows=[],name='netmon';
+  if(v==='clients'){
+    name='设备清单';head=['名称','IP','MAC','厂商','查询数','下载','上传','备注'];
+    rows=(d.devices||[]).map(function(x){var q=x.device||{};
+      return [q.display,q.ip,q.mac,q.vendor,x.n,hb(x.bytes_in),hb(x.bytes_out),
+              (favHas('ip',q.ip||'')?'[收藏] ':'')+noteGet('ip',q.ip||'')+
+              (x.stale_static?' 静态分配未生效，仍用 '+(x.active_ip||''):'')];});
+  }else if(v==='queries'){
+    name='查询日志';head=['时间','客户端','域名','类型','状态','耗时ms','应答'];
+    rows=(d.dns_recent||[]).map(function(r){return [tFull(r.ts),r.name||r.ip,r.q,
+      qname(r.qtype),(RCODE[r.rcode]||{}).t||r.rcode,r.ms,r.answers];});
+  }else if(v==='domains'){
+    name='域名排行';head=['域名','查询数','成功数','NXDOMAIN','REFUSED','均耗时ms'];
+    rows=(d.dns||[]).map(function(x){return [x.q,x.n,x.replied,x.nx,x.ref,x.ms];});
+  }else if(v==='blocks'){
+    name='拦截记录';head=['域名','次数','规则'];
+    rows=((d.block_stats||{}).top_blocked||[]).map(function(x){return [x.q,x.n,x.rule];});
+  }else if(v==='traffic'){
+    name='流量排行';head=['域名 / IP','连接','上传','下载','合计'];
+    rows=(d.traffic_hosts||[]).map(function(x){return [x.k,x.conns,hb(x.out),hb(x['in']),hb(x.bytes)];});
+  }else if(v==='client'&&S.client){
+    name='设备详情';head=['域名','次数','异常','均耗时ms'];
+    rows=(S.client.top_domains||[]).map(function(x){return [x.q,x.n,(x.nx||0)+(x.ref||0),x.ms];});
+  }else{
+    name='总览摘要';head=['指标','值'];var sm=d.summary||{};
+    rows=[['DNS 查询',sm.queries],['活跃客户端',sm.clients],['总流量',hb((sm.bytes_out||0)+(sm.bytes_in||0))],
+          ['拦截',(d.block_stats||{}).blocked],['数据库',hb(sm.db_bytes)]];
+  }
+  csvDownload(name,head,rows);
+}
+/* =====================================================================
+   状态
+   ===================================================================== */
+var S = {
+  since:86400, view:'overview', ip:'', theme:'dark', auto:true,
+  data:null, client:null, detail:null, dtype:'', dkey:'', detailFrom:'#/overview',
+  q:'', filter:'all', layout:'card', sort:'total',
+  rcode:'all', cls:'all', csort:'queries', dq:'', qq:'', timer:null,
+  page:{domains:1,traffic:1,recent:1,queries:1,blocked:1,unresolved:1,blockdev:1}
+};
+var NAV = [
+  {k:'overview',t:'总览',i:'grid'},
+  {k:'clients', t:'客户端',i:'users'},
+  {k:'blocks',  t:'拦截记录',i:'shield'},
+  {k:'traffic', t:'流量排行',i:'download'},
+  {k:'queries', t:'查询日志',i:'list'},
+  {k:'domains', t:'域名排行',i:'globe'},
+  {k:'system',  t:'系统信息',i:'settings'}
+];
+var TITLES = {
+  overview:['总览','全网 DNS 与流量概况'], clients:['客户端','所有已知设备 · 点击任一台查看完整详情'],
+  client:['设备详情','单台设备的 DNS 行为、域名偏好与流量'],
+  blocks:['拦截规则','哪些域名被拦截 · 规则变更自动同步 · 真实解析失败'],
+  traffic:['流量排行','哪台设备用得多 · 哪些域名和 IP 耗流量 · 下载与上传分开看'],
+  queries:['查询日志','最近都查了哪些域名'], domains:['域名排行','查询次数与流量分布'],
+  system:['系统信息','运行状态、接口统计与数据来源'],
+  detail:['条目详情','关联设备、连接时间、分时段流量与 DNS 明细']
+};
+
+/* =====================================================================
+   启动：填充静态 UI
+   ===================================================================== */
+function initStatic(){
+  $('brand-mark').innerHTML=icon('activity',19);
+  NAV.forEach(function(n){
+    var e=$('nav-'+n.k);
+    e.innerHTML=icon(n.i,16)+'<span>'+n.t+'</span>'+
+      (n.k==='clients'?'<span class="cnt" id="nav-cnt">—</span>':'');
+    e.onclick=function(){ location.hash='#/'+n.k; };
+  });
+  $('btn-auto').innerHTML=icon('pause',14);
+  $('btn-refresh').innerHTML=icon('refresh',14)+'<span>刷新</span>';
+  setHead('t-dnschart','DNS 活动趋势','activity');
+  setHead('t-flowchart','流量趋势','download');
+  setHead('t-clients','最活跃设备','users');
+  setHead('t-domains','热门域名','globe');
+  setHead('t-recent','最近查询','list');
+  setHead('t-detail-timeline','查询活动','activity');
+  setHead('t-detail-flow','流量趋势','download');
+  setHead('t-detail-domains','常访域名','globe');
+  setHead('t-detail-dist','应答分布','shield');
+  setHead('t-detail-traffic','流量目的地','download');
+  setHead('t-detail-recent','查询日志','list');
+  setHead('t-traffic-dev','设备流量排行','users');
+  setHead('t-traffic-host','域名 / IP 流量排行','globe');
+  setHead('t-traffic-cidr','目的网段','globe');
+  setHead('t-traffic-note','怎么看这份排行','list');
+  setHead('t-blocksum','广告拦截 Top 域名','shield');
+  setHead('t-heat','一周活动热力图','activity');
+  setHead('t-block-trend','拦截占比趋势','activity');
+  setHead('t-block-dev','被拦截最多的设备','users');
+  setHead('t-blocks-hp','homeproxy 规则同步','shield');
+  setHead('t-blocks-blocked','被拦截的域名','shield');
+  setHead('t-blocks-unresolved','真实解析失败','alert');
+  setHead('t-blocks-events','规则变更历史','clock');
+  setHead('t-blocks-note','判读说明','list');
+  setHead('t-dom-dns','DNS 查询最多','list');
+  setHead('t-dom-traffic','流量最大','download');
+  setHead('t-dom-cidr','目的网段','globe');
+  setHead('t-sys-iface','接口统计','activity');
+  setHead('t-sys-conn','连接状态','list');
+  setHead('t-sys-daily','每日流量总量','download');
+  setHead('t-sys-db','数据库','db');
+  setHead('t-sys-src','数据来源','shield');
+  setHead('t-sys-cmd','常用命令','settings');
+  setHead('t-d2-timeline','分时段流量','activity');
+  setHead('t-d2-devices','哪些设备访问过','users');
+  setHead('t-d2-conns','连接明细','list');
+  setHead('t-d2-dns','DNS 查询明细','globe');
+  setHead('t-rank-dev-down','下载最多的设备','download');
+  setHead('t-rank-dev-up','上传最多的设备','upload');
+  setHead('t-rank-host-down','下载最多的目标','download');
+  setHead('t-rank-host-up','上传最多的目标','upload');
+
+  function searchBox(id,ph,key){
+    var e=$(id);
+    e.innerHTML=icon('search',14)+'<input type="text" placeholder="'+esc(ph)+'" id="'+id+'-in">';
+    var inp=$(id+'-in');
+    inp.oninput=function(){ S[key]=inp.value.trim().toLowerCase();
+      if(key==='dq')S.page.recent=1; if(key==='qq')S.page.queries=1; renderView(); };
+  }
+  searchBox('search-clients','搜索名称 / IP / MAC / 厂商…','q');
+  searchBox('search-queries','搜索域名 / 客户端 / IP…','qq');
+  searchBox('search-detail','搜索域名 / 应答 IP…','dq');
+  $('global-search').innerHTML=icon('search',14)+
+    '<input type="text" id="gs-in" placeholder="搜索域名 / IP / 设备…">';
+  $('gs-in').onkeydown=function(ev){ if(ev.key==='Enter')globalSearch(this.value.trim()); };
+  $('csort-box').onchange=function(){ S.csort=this.value;renderView(); };
+
+  $('go-clients').onclick=function(){location.hash='#/clients';};
+  $('go-domains').onclick=function(){location.hash='#/domains';};
+  $('go-queries').onclick=function(){location.hash='#/queries';};
+  $('go-blocks').onclick=function(){location.hash='#/blocks';};
+  $('crumb-back').onclick=function(){location.hash='#/clients';};
+  $('btn-refresh').onclick=function(){load();if(S.view==='client')loadClient();if(S.view==='detail')loadDetail();};
+  $('theme-box').value=S.theme;
+  $('theme-box').onchange=function(){
+    S.theme=this.value;applyTheme();
+    try{localStorage.setItem('netmon-theme',S.theme);}catch(e){}
+  };
+  $('btn-alerts').onclick=function(){ $('alert-pop').classList.toggle('on'); };
+  $('btn-export').innerHTML=icon('download',14)+'<span>导出</span>';
+  $('btn-export').onclick=exportCurrent;
+  /* 更多时间范围：与快捷按钮互斥高亮，选择即刻生效，不用再按回车 */
+  $('since-custom').onchange=function(){
+    var sec=parseInt(this.value,10);
+    if(!(sec>=60&&sec<=2592000))return;
+    S.since=sec;
+    S.page.blocked=S.page.unresolved=S.page.queries=1;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-since]'),
+      function(x){ x.classList.toggle('on',
+        parseInt(x.getAttribute('data-since'),10)===sec); });
+    load(); if(S.view==='client')loadClient(); if(S.view==='detail')loadDetail();
+  };
+  $('btn-auto').onclick=function(){
+    S.auto=!S.auto;
+    $('btn-auto').className='icon-btn'+(S.auto?' on':'');
+    $('btn-auto').innerHTML=icon(S.auto?'pause':'play',14);
+    resetTimer();
+  };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-since]'),function(b){
+    b.onclick=function(){
+      Array.prototype.forEach.call(document.querySelectorAll('[data-since]'),function(x){x.classList.remove('on');});
+      b.classList.add('on'); S.since=parseInt(b.getAttribute('data-since'),10);
+      S.page.blocked=S.page.unresolved=S.page.queries=1;
+      var sc=$('since-custom'); if(sc)sc.value='';   /* 快捷档优先，下拉回到占位 */
+      load(); if(S.view==='client')loadClient(); if(S.view==='detail')loadDetail();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-f]'),function(b){
+    b.onclick=function(){
+      Array.prototype.forEach.call(document.querySelectorAll('[data-f]'),function(x){x.classList.remove('on');});
+      b.classList.add('on');S.filter=b.getAttribute('data-f');renderView();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-l]'),function(b){
+    b.onclick=function(){
+      Array.prototype.forEach.call(document.querySelectorAll('[data-l]'),function(x){x.classList.remove('on');});
+      b.classList.add('on');S.layout=b.getAttribute('data-l');renderView();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-r]'),function(b){
+    b.onclick=function(){
+      Array.prototype.forEach.call(document.querySelectorAll('[data-r]'),function(x){x.classList.remove('on');});
+      b.classList.add('on');S.rcode=b.getAttribute('data-r');S.page.queries=1;renderView();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-c]'),function(b){
+    b.onclick=function(){
+      Array.prototype.forEach.call(document.querySelectorAll('[data-c]'),function(x){x.classList.remove('on');});
+      b.classList.add('on');S.cls=b.getAttribute('data-c');S.page.queries=1;renderView();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-s]'),function(b){
+    b.onclick=function(){
+      Array.prototype.forEach.call(document.querySelectorAll('[data-s]'),function(x){x.classList.remove('on');});
+      b.classList.add('on');S.sort=b.getAttribute('data-s');renderView();
+    };
+  });
+  $('detail-back').onclick=function(){ location.hash=S.detailFrom||'#/overview'; };
+  document.addEventListener('click',function(ev){
+    /* 点页面其它地方就收起告警下拉。铃铛自身的 onclick 先 toggle，
+       冒泡到这里时 onBtn 非空，所以不会被立刻关掉；面板内部同理。 */
+    var ap=$('alert-pop');
+    if(ap&&ap.classList.contains('on')){
+      var inPop=ev.target.closest?ev.target.closest('#alert-pop'):null;
+      var onBtn=ev.target.closest?ev.target.closest('#btn-alerts'):null;
+      if(!inPop&&!onBtn) ap.classList.remove('on');
+    }
+    var st=ev.target.closest?ev.target.closest('[data-star]'):null;
+    if(st){ favToggle(st.getAttribute('data-star'),st.getAttribute('data-skey')); return; }
+    var am=ev.target.closest?ev.target.closest('#alert-more'):null;
+    if(am){ $('alert-pop').classList.add('on'); return; }
+    var pg=ev.target.closest?ev.target.closest('[data-pg]'):null;
+    if(pg){ var pv=String(pg.getAttribute('data-pg')).split(':');
+      S.page[pv[0]]=parseInt(pv[1],10)||1; renderView(); return; }
+    var t=ev.target.closest?ev.target.closest('[data-goto]'):null;
+    if(t){ location.hash='#/client/'+t.getAttribute('data-goto'); return; }
+    var n=ev.target.closest?ev.target.closest('[data-navto]'):null;
+    if(n){ location.hash='#/'+n.getAttribute('data-navto'); return; }
+    var t2=ev.target.closest?ev.target.closest('[data-detail]'):null;
+    if(t2){
+      S.detailFrom=location.hash||'#/overview';
+      location.hash='#/detail/'+t2.getAttribute('data-detail')+'/'+
+        encodeURIComponent(t2.getAttribute('data-dkey')||'');
+    }
+  });
+  /* 备注输入用 change 委托：innerHTML 重建后无需重新绑定 */
+  document.addEventListener('change',function(ev){
+    var t=ev.target;
+    if(t&&t.getAttribute&&t.getAttribute('data-notetype')){
+      noteSet(t.getAttribute('data-notetype'),t.getAttribute('data-notekey'),
+              String(t.value||'').trim());
+      renderView();
+    }
+  });
+  window.addEventListener('hashchange',navigate);
+  document.addEventListener('keydown',function(ev){
+    if(ev.key!=='Escape')return;
+    var ap=$('alert-pop');
+    /* 下拉开着时 Esc 只收起它，不误触发「返回客户端」 */
+    if(ap&&ap.classList.contains('on')){ ap.classList.remove('on'); return; }
+    if(S.view==='client')location.hash='#/clients';
+  });
+  /* 首屏骨架：dashboard 冷启动要几秒（聚合查询），期间 KPI 区不能空白，
+     否则在 LuCI 的 iframe 里看起来像加载失败。load() 成功后会被真实内容替换。 */
+  $('kpi-grid').innerHTML='<div class="notecard" style="grid-column:1/-1;text-align:center;'+
+    'padding:22px 14px;color:var(--fg2)">正在读取监控数据…<br>'+
+    '<span style="color:var(--fg3);font-size:11px">首次打开需要几秒，之后会走缓存</span></div>';
+  try{ S.theme=localStorage.getItem('netmon-theme')||'dark'; }catch(e){}
+  applyTheme();
+}
+function applyTheme(){
+  document.documentElement.setAttribute('data-theme',S.theme);
+  var b=$('theme-box'); if(b)b.value=S.theme;
+}
+function setDot(state,text){
+  $('dot').className='dot'+(state==='live'?' live':state==='err'?' err':'');
+  $('status-text').textContent=text||'连接中';
+}
+function showErr(msg){ var e=$('err');if(!msg){e.style.display='none';return;}
+  e.textContent=msg;e.style.display='block'; }
+function resetTimer(){
+  if(S.timer)clearInterval(S.timer);
+  S.timer=setInterval(function(){
+    if(!S.auto)return;
+    load(); if(S.view==='client')loadClient(); if(S.view==='detail')loadDetail();
+  },10000);
+}
+
+/* =====================================================================
+   路由
+   ===================================================================== */
+function navigate(){
+  var h=location.hash||'#/overview',p=h.replace(/^#\/?/,'').split('/');
+  var v=p[0]||'overview';
+  if(['overview','clients','client','blocks','traffic','queries',
+      'domains','system','detail'].indexOf(v)<0)v='overview';
+  if(v==='client'&&!p[1]){v='clients';}
+  if(v==='detail'&&(!p[1]||!p[2])){v='overview';}
+  var prevIp=S.ip, prevKey=S.dtype+'|'+S.dkey;
+  S.view=v;S.ip=v==='client'?decodeURIComponent(p[1]||''):'';
+  if(v==='detail'){ S.dtype=p[1]||''; S.dkey=decodeURIComponent(p[2]||''); }
+  Array.prototype.forEach.call(document.querySelectorAll('[data-nav]'),function(e){
+    e.classList.toggle('on',e.getAttribute('data-nav')===(v==='client'?'clients':v));
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.view'),function(e){e.classList.remove('on');});
+  $('v-'+v).classList.add('on');
+  var t=TITLES[v]||TITLES.overview;
+  $('page-title').textContent=v==='client'?'设备详情':t[0];
+  $('page-sub').textContent=t[1];
+  if(v==='client'){
+    $('crumb-ip').textContent=S.ip;
+    /* 切换设备时清掉上一台的残留，先给一个加载态，避免闪现旧数据 */
+    if(prevIp!==S.ip){
+      S.client=null;S.page.domains=S.page.traffic=S.page.recent=1;
+      $('detail-head').innerHTML=empty('正在加载设备详情…');
+      $('detail-kpi').innerHTML='';
+      $('detail-timeline').innerHTML='';
+      $('detail-flow').innerHTML='';
+      $('detail-domains').innerHTML='';
+      $('detail-recent').innerHTML='';
+      $('detail-traffic').innerHTML='';
+    }
+    loadClient();
+  }
+  if(v==='detail'){
+    if(prevKey!==S.dtype+'|'+S.dkey){
+      S.detail=null;
+      $('d2-head').innerHTML=empty('正在加载详情…');
+      $('d2-kpi').innerHTML='';$('d2-timeline').innerHTML='';
+      $('d2-devices').innerHTML='';$('d2-conns').innerHTML='';
+      $('d2-dns').innerHTML='';
+    }
+    loadDetail();
+  }
+  renderView();
+  window.scrollTo(0,0);
+}
+
+/* =====================================================================
+   数据加载
+   ===================================================================== */
+function xhr(url,ok,fail){
+  /* 离机预览用：preview-live.html 会内嵌真实数据到 NETMON_DEMO。
+     线上页面没有这个全局变量，走正常 CGI 请求，不受影响。 */
+  if(typeof NETMON_DEMO!=='undefined'&&NETMON_DEMO){
+    /* 同步返回：预览页在 load 事件前就渲染完，无头浏览器截图不会拍到空壳 */
+    if(url.indexOf('view=client')>=0){
+      var m=/[?&]ip=([^&]+)/.exec(url), ip=m?decodeURIComponent(m[1]):'';
+      ok((NETMON_DEMO.clients&&NETMON_DEMO.clients[ip])||NETMON_DEMO.client);
+      return;
+    }
+    if(url.indexOf('view=detail')>=0){
+      var mt=/[?&]type=([^&]+)/.exec(url), mk=/[?&]key=([^&]+)/.exec(url);
+      var tt=mt?decodeURIComponent(mt[1]):'', kk=mk?decodeURIComponent(mk[1]):'';
+      var dd=(NETMON_DEMO.details||{})[tt+'|'+kk];
+      /* 预览没内嵌该条目时，退到同类型的样例，保证版式可看 */
+      if(!dd){ var pre=tt+'|', ks=Object.keys(NETMON_DEMO.details||{});
+        for(var i=0;i<ks.length;i++) if(ks[i].indexOf(pre)===0){ dd=NETMON_DEMO.details[ks[i]]; break; } }
+      ok(dd||NETMON_DEMO.detail||{error:'预览模式暂无该条目详情'});
+      return;
+    }
+    ok(NETMON_DEMO.dashboard); return;
+  }
+  var x=new XMLHttpRequest();
+  x.open('GET',url,true);x.timeout=15000;
+  x.onload=function(){
+    if(x.status!==200){fail('接口 '+x.status);return;}
+    try{ok(JSON.parse(x.responseText));}catch(e){fail('JSON 解析失败：'+e.message);}
+  };
+  x.onerror=function(){fail('请求失败');};
+  x.ontimeout=function(){fail('请求超时');};
+  x.send();
+}
+function load(){
+  xhr(API+'?since='+S.since+'&_='+Date.now(),function(d){
+    if(d.error){setDot('err','接口错误');showErr(d.error);return;}
+    S.data=d;showErr(null);setDot('live','实时');
+    var tm=new Date().toLocaleTimeString('zh-CN',{hour12:false});
+    $('last-update').textContent='更新于 '+tm;$('side-update').textContent=tm;var h=$('side-host');if(h&&!h.dataset.set&&location.hostname){h.textContent=location.hostname;h.dataset.set='1';}
+    $('nav-cnt').textContent=d.devices?d.devices.length:'—';
+    renderView();
+  },function(msg){setDot('err','离线');showErr(msg+'：检查 netmon 与 uhttpd 是否在运行');});
+}
+function loadClient(){
+  if(!S.ip)return;
+  /* IPv6 的冒号不能被 encodeURIComponent 编成 %3A：CGI 的 IP 白名单
+     不含 %，会把它删成一串 hex 导致 "invalid ip"。这里只留 IP 合法字符。 */
+  var ipq=String(S.ip||'').replace(/[^0-9a-fA-F.:]/g,'');
+  xhr(API+'?view=client&ip='+ipq+'&since='+S.since+'&_='+Date.now(),
+    function(c){ if(c.error){showErr(c.error);return;} S.client=c;renderView(); },
+    function(msg){showErr('设备详情加载失败：'+msg);});
+}
+function loadDetail(){
+  if(!S.dtype||!S.dkey)return;
+  xhr(API+'?view=detail&type='+encodeURIComponent(S.dtype)+
+      '&key='+encodeURIComponent(S.dkey)+'&since='+S.since+'&_='+Date.now(),
+    function(x){ if(x.error){showErr(x.error);return;} S.detail=x;renderView(); },
+    function(msg){showErr('条目详情加载失败：'+msg);});
+}
+
+/* 窄屏卡片模式下，从表头自动给每个单元格取标签。
+   这样所有表格共用一套逻辑，新增视图不用改生成代码，也保证一列都不藏。 */
+function labelizeRows(){
+  Array.prototype.forEach.call(document.querySelectorAll('.rows'),function(box){
+    var head=box.querySelector('.rhead');
+    if(!head) return;
+    var labels=Array.prototype.map.call(head.children,function(c){
+      return (c.textContent||'').trim()||'—';});
+    Array.prototype.forEach.call(box.querySelectorAll('.row'),function(row){
+      Array.prototype.forEach.call(row.children,function(cell,i){
+        if(i<labels.length && !cell.getAttribute('data-label'))
+          cell.setAttribute('data-label',labels[i]);
+      });
+    });
+  });
+}
+
+/* =====================================================================
+   渲染分发
+   ===================================================================== */
+function renderView(){
+  var d=S.data;
+  if(d)renderAlerts(d);
+  if(S.view==='client'){
+    if(S.client)renderClient(S.client,d);
+    renderClientNote(); labelizeRows(); return;
+  }
+  if(S.view==='detail'){
+    if(S.detail)renderDetail(S.detail,d);
+    renderDetailNote(); labelizeRows(); return;
+  }
+  if(!d)return;
+  if(S.view==='overview'){ renderOverview(d); renderHeatmap(d); renderDigest(d); }
+  else if(S.view==='blocks')renderBlocks(d);
+  else if(S.view==='traffic')renderTraffic(d);
+  else if(S.view==='clients')renderClients(d);
+  else if(S.view==='queries')renderQueries(d);
+  else if(S.view==='domains')renderDomains(d);
+  else if(S.view==='system')renderSystem(d);
+  labelizeRows();
+}
+
+
+/* =====================================================================
+   收藏与备注：只写在浏览器 localStorage，不上传、不改后端、不跨设备同步。
+   键格式 "类型:标识"，类型取 ip / qname / host / cidr，与下钻类型一致。
+   ===================================================================== */
+var NOTES_KEY='netmon-notes', FAVS_KEY='netmon-favs';
+function loadStore(k){ try{ return JSON.parse(localStorage.getItem(k)||'{}')||{}; }
+                       catch(e){ return {}; } }
+var S_NOTES=loadStore(NOTES_KEY), S_FAVS=loadStore(FAVS_KEY);
+function storeKey(t,k){ return t+':'+k; }
+function noteGet(t,k){ return S_NOTES[storeKey(t,k)]||''; }
+function noteSet(t,k,v){
+  var kk=storeKey(t,k);
+  if(v) S_NOTES[kk]=v; else delete S_NOTES[kk];
+  try{ localStorage.setItem(NOTES_KEY,JSON.stringify(S_NOTES)); }catch(e){}
+}
+function favHas(t,k){ return !!S_FAVS[storeKey(t,k)]; }
+function favToggle(t,k){
+  var kk=storeKey(t,k);
+  if(S_FAVS[kk]) delete S_FAVS[kk]; else S_FAVS[kk]=1;
+  try{ localStorage.setItem(FAVS_KEY,JSON.stringify(S_FAVS)); }catch(e){}
+  renderView();
+}
+function starHtml(t,k){
+  var on=favHas(t,k);
+  return '<button class="star'+(on?' on':'')+'" data-star="'+esc(t)+'" data-skey="'+esc(k)+
+    '" title="'+(on?'取消收藏':'收藏，方便在客户端列表里快速找到')+'">'+
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linejoin="round">'+
+    '<path d="M12 2.4l3.05 6.18 6.82.99-4.93 4.81 1.16 6.79L12 17.96l-6.1 3.21 1.16-6.79-4.93-4.81 6.82-.99z"/>'+
+    '</svg></button>';
+}
+function noteBoxHtml(t,k,label){
+  var on=favHas(t,k);
+  return '<label>'+esc(label||'备注')+'</label>'+
+    '<input type="text" value="'+esc(noteGet(t,k))+'" data-notetype="'+esc(t)+
+      '" data-notekey="'+esc(k)+'" placeholder="给这个条目写个说明，只保存在本机浏览器" maxlength="80">'+
+    starHtml(t,k)+'<span class="pill '+(on?'ok':'na')+'">'+(on?'已收藏':'未收藏')+'</span>';
+}
+function noteTag(t,k){ var n=noteGet(t,k); return n?'<span class="note-tag">'+esc(n)+'</span>':''; }
+function renderClientNote(){
+  var box=$('client-note'), c=S.client; if(!box||!c)return;
+  var v=c.device||{};
+  box.innerHTML=noteBoxHtml('ip',v.ip||'','设备备注');
+}
+function renderDetailNote(){
+  var box=$('detail-note'); if(!box)return;
+  box.innerHTML=noteBoxHtml(S.dtype||'qname',S.dkey||'','条目备注');
+}
+
+/* =====================================================================
+   站内告警：只用本次已加载的指标即时计算，不新增采集、不发请求、不改配置。
+   每条都给出「是什么 + 去哪看」，避免只报一个数字。
+   ===================================================================== */
+function computeAlerts(d){
+  var a=[],s=d.summary||{},b=d.block_stats||{},hp=d.hp||{},devs=d.devices||[];
+  if(hp.available===0) a.push({lv:'info',t:'拦截归因未启用',
+    m:'未检测到 homeproxy。它是可选依赖，设备、流量、DNS 日志与系统状态都不受影响。'});
+  var rate=(s.reply_rate||0)*100;
+  if(rate>0&&rate<90) a.push({lv:'bad',t:'DNS 成功率偏低',
+    m:'当前 '+rate.toFixed(1)+'%，可到「查询日志」按应答码筛选定位失败来源。'});
+  if((s.avg_ms||0)>100) a.push({lv:'warn',t:'DNS 响应偏慢',
+    m:'平均 '+Number(s.avg_ms).toFixed(1)+' ms，通常是上游解析或链路变慢。'});
+  if((b.unresolved||0)>5000) a.push({lv:'warn',t:'解析失败偏多',
+    m:nf(b.unresolved)+' 次真实解析失败，去「拦截记录」看具体域名。'});
+  var stale=devs.filter(function(x){return x.stale_static;});
+  if(stale.length) a.push({lv:'warn',t:'静态分配未生效',
+    m:stale.slice(0,3).map(function(x){return (x.device||{}).display||'设备';}).join('、')+
+      ' 仍在使用旧 IP，等设备重连或检查路由器配置。'});
+  if((s.db_bytes||0)>500*1048576) a.push({lv:'info',t:'数据库偏大',
+    m:'当前 '+hb(s.db_bytes)+'，可在「系统信息」里缩短数据保留天数。'});
+  var tot=(s.bytes_out||0)+(s.bytes_in||0);
+  var big=devs.filter(function(x){return x.bytes_out>1073741824 && tot>0 &&
+                                        x.bytes_out/tot>0.5;});
+  if(big.length) a.push({lv:'info',t:'单台设备上传占比较高',
+    m:((big[0].device||{}).display||'某台设备')+' 占全网一半以上上行，可能是云备份或 PT 做种。'});
+  return a;
+}
+function renderAlerts(d){
+  var a=computeAlerts(d),btn=$('btn-alerts'),pop=$('alert-pop'),strip=$('alert-strip');
+  if(btn){
+    btn.innerHTML=icon('alert',15)+(a.length?'<span class="alert-dot">'+a.length+'</span>':'');
+    btn.className='icon-btn alert-btn'+(a.length?' on':'');
+  }
+  if(pop) pop.innerHTML='<h4>站内告警 · '+a.length+' 条</h4>'+
+    (a.length?a.map(function(x){
+      return '<div class="alert-row">'+pill(x.lv==='bad'?'严重':x.lv==='warn'?'注意':'提示',x.lv)+
+        '<div><b>'+esc(x.t)+'</b><br><span style="color:var(--fg2)">'+esc(x.m)+'</span></div></div>';
+    }).join(''):'<div class="empty">当前没有需要关注的情况</div>')+
+    '<div class="notecard" style="margin-top:9px;font-size:11px;line-height:1.7">'+
+    '基于本次加载的数据即时计算，只做提示，不会改动任何配置。</div>';
+  if(strip){
+    if(!a.length){ strip.innerHTML=''; }
+    else strip.innerHTML='<b>需要关注 '+a.length+' 项：</b>'+
+      a.slice(0,3).map(function(x){return esc(x.t);}).join(' · ')+
+      (a.length>3?' 等':'')+' <a class="link" id="alert-more">查看全部 →</a>';
+  }
+}
+
+/* =====================================================================
+   一周 7×24 活动热力图：固定近 7 天，与顶部所选时间范围无关。
+   星期与小时用浏览器本地时区算，服务端不硬编码 UTC+8。
+   颜色用 var(--accent) + opacity，自动适配 6 套皮肤。
+   ===================================================================== */
+function renderHeatmap(d){
+  var grid=$('heat-grid'); if(!grid)return;
+  var hm=d.heatmap||[],cells=[],i;
+  for(i=0;i<168;i++)cells.push(0);
+  hm.forEach(function(x){
+    var dt=new Date(Number(x.h));
+    var dow=(dt.getDay()+6)%7;                 /* JS 0=周日 → 0=周一 */
+    cells[dow*24+dt.getHours()]+=Number(x.n)||0;
+  });
+  var max=0; cells.forEach(function(v){if(v>max)max=v;});
+  var names=['一','二','三','四','五','六','日'],out='';
+  for(var w=0;w<7;w++){
+    out+='<div class="heat-lab">周'+names[w]+'</div>';
+    for(var h=0;h<24;h++){
+      var v=cells[w*24+h],r=max?Math.sqrt(v/max):0;
+      var st=v?'background:var(--accent);opacity:'+(0.16+0.84*r).toFixed(2):'';
+      out+='<div class="heat-cell" style="'+st+'" title="周'+names[w]+' '+h+':00 · '+
+        nf(v)+' 次查询"></div>';
+    }
+  }
+  grid.innerHTML=out;
+  var ax=$('heat-axis');
+  if(ax){ var t='<span></span>'; for(var h2=0;h2<24;h2++)t+='<span>'+(h2%3===0?h2:'')+'</span>'; ax.innerHTML=t; }
+  var sub=$('heat-sub');
+  if(sub) sub.textContent='最近 7 天 · '+hm.length+' 个小时有数据 · 最忙一小时 '+nf(max)+' 次查询';
+}
+
+
+/* 把散在 6 张 KPI 里的数字组织成一段结论，避免用户自己拼信息。
+   全部取自本次已加载的 dashboard，不产生任何新请求。 */
+function renderDigest(d){
+  var e=$('digest'); if(!e)return;
+  var s=d.summary||{},b=d.block_stats||{},hp=d.hp||{};
+  var hours=Math.round(S.since/3600);
+  var win=hours<24?hours+' 小时':(hours%24===0?(hours/24)+' 天':hours+' 小时');
+  var q=nf(s.queries||0),rate=pct(s.reply_rate||0),
+      ms=(s.avg_ms!=null?Number(s.avg_ms).toFixed(1):'—');
+  var txt='<b>过去 '+win+'</b>：'+nf(s.clients||0)+' 台设备发起了 '+q+
+    ' 次域名查询，成功率 '+rate+'，平均 '+ms+' ms；全网流量 '+
+    hb((s.bytes_out||0)+(s.bytes_in||0))+'（↓'+hb(s.bytes_in||0)+
+    ' / ↑'+hb(s.bytes_out||0)+'）。';
+  if(hp.available===0){
+    txt+='未启用 homeproxy，本时段暂不做拦截归因。';
+  }else{
+    var top=(b.top_unresolved||[])[0];
+    txt+='异常应答里 <b>'+nf(b.blocked||0)+' 次是广告规则拦截</b>（占异常 '+
+      Number(b.blocked_pct||0).toFixed(1)+'%）、'+nf(b.local||0)+
+      ' 次是本地域伴生查询，真正需要留意的解析失败 <b>'+nf(b.unresolved||0)+
+      ' 次</b>'+(top?'，最多的是 <code>'+esc(top.q)+'</code>（'+nf(top.n)+' 次）':'')+'。';
+  }
+  var fav=(d.devices||[]).filter(function(x){return favHas('ip',(x.device||{}).ip||'');});
+  if(fav.length) txt+=' 你收藏了 '+fav.length+' 台设备。';
+  e.innerHTML=txt;
+}
+
+/* 拦截占比趋势：dns_timeline 已带 n / blocked，零额外请求 */
+function renderBlockTrend(d){
+  var e=$('block-trend'),note=$('block-trend-note'); if(!e)return;
+  var tl=d.dns_timeline||[];
+  if(!tl.length){ e.innerHTML=empty('该时段没有 DNS 记录'); if(note)note.textContent='—'; return; }
+  var max=0,sb=0,st=0;
+  tl.forEach(function(x){ var p=x.n?(x.blocked||0)/x.n*100:0;
+    if(p>max)max=p; sb+=x.blocked||0; st+=x.n||0; });
+  e.innerHTML=tl.map(function(x){
+    var p=x.n?(x.blocked||0)/x.n*100:0,hh=max?Math.max(3,p/max*100):3;
+    return '<div class="pct-col" title="'+esc(tShort(x.t))+' · 拦截占 '+p.toFixed(1)+
+      '%"><div class="pct-bar" style="height:'+hh.toFixed(1)+'%"></div></div>';
+  }).join('');
+  if(note) note.innerHTML='所选时段内拦截应答占全部 DNS 查询 <b>'+
+    (st?(sb/st*100).toFixed(1):'0')+'%</b>，单小时最高 <b>'+max.toFixed(1)+
+    '%</b>。柱子是「该小时拦截数 ÷ 该小时查询数」，波动通常跟着设备使用时段走，'+
+    '不代表规则失效；规则是否变化请看下方「规则变更历史」。';
+}
+/* 被拦截最多的设备：devices 行里已有 blocked 归因计数，直接排序 */
+function renderBlockClients(d){
+  var e=$('block-dev'); if(!e)return;
+  var list=(d.devices||[]).filter(function(x){return (x.blocked||0)>0;})
+    .sort(function(a,b){return (b.blocked||0)-(a.blocked||0);});
+  var tot=0; list.forEach(function(x){tot+=x.blocked||0;});
+  S.page.blockdev=pager('pg-blockdev',list.length,S.page.blockdev,8,'blockdev');
+  rowsHtml('block-dev',pageSlice(list,S.page.blockdev,8),function(x){
+    var v=x.device||{},ip=v.ip||'';
+    return '<div class="row g-top"><div class="key" style="min-width:0">'+
+      devLink(ip,v.display||ip)+starHtml('ip',ip)+noteTag('ip',ip)+'</div>'+
+      '<div class="num">'+nf(x.blocked)+'</div>'+
+      '<div class="num" style="color:var(--fg2)">'+pct(tot?x.blocked/tot:0)+'</div></div>';
+  });
+}
+
+/* ---------------- 拦截记录 ---------------- */
+function renderBlocks(d){
+  var b=d.block_stats||{}, hp=d.hp||{};
+  if(hp.available===0){
+    $('blocks-kpi').innerHTML='';
+    $('blocks-fp').textContent='可选依赖未启用';
+    $('blocks-hpinfo').innerHTML='';
+    $('blocks-rules').innerHTML='<div class="notecard"><b>未启用拦截归因</b><br>'+
+      esc(hp.reason||'未检测到 homeproxy')+'<br><br>homeproxy 属于<b>可选依赖</b>：'+
+      '安装并配置 reject 规则后，本页会自动出现拦截统计与规则清单，无需改代码或重启。'+
+      '其余功能（设备、流量、DNS 日志、系统状态）完全不受影响。</div>';
+    ['blocks-blocked','blocks-unresolved','blocks-events'].forEach(function(id){
+      $(id).innerHTML=empty('需要 homeproxy 才能生成');});
+    $('pg-blocked').innerHTML=''; $('pg-unresolved').innerHTML='';
+    ['block-trend','block-dev','pg-blockdev'].forEach(function(id){ $(id).innerHTML=''; });
+    $('block-trend-note').textContent='需要 homeproxy 才能生成';
+    $('blocks-note').innerHTML='本页依赖 homeproxy 的规则表做归因。未安装时，'+
+      'DNS 异常仍会在查询日志里显示为「解析失败」，但不会被误标成广告拦截。';
+    return;
+  }
+
+  $('blocks-kpi').innerHTML=[
+    kpi({l:'广告 / 规则拦截',v:nf(b.blocked||0),i:'shield',cls:'k-bad',
+         f:'占异常 '+(b.blocked_pct!=null?Number(b.blocked_pct).toFixed(1):'0')+'% · 不是网络故障'}),
+    kpi({l:'本地域伴生',v:nf(b.local||0),i:'globe',f:'.lan 搜索域导致的 NXDOMAIN'}),
+    kpi({l:'真实解析失败',v:nf(b.unresolved||0),i:'alert',cls:'k-warn',
+         f:'排除拦截后才需要关注'}),
+    kpi({l:'拦截规则',v:(hp.rules||0)+' / '+nf(hp.patterns||0),i:'list',
+         f:'规则数 / 规则条目数'}),
+    kpi({l:'规则变更',v:nf((hp.events||[]).length),i:'clock',
+         f:'配置或规则集变化会自动同步'})
+  ].join('');
+
+  $('blocks-fp').textContent='规则版本 '+(hp.fp||'—').slice(0,12);
+  $('blocks-hpinfo').innerHTML=
+    '<span class="dot live"></span><span>与 homeproxy 实时同步</span>'+
+    pill('生效规则 '+(hp.rules_list||[]).length+' 条','info')+
+    '<span>最近变更 '+esc(tFull(hp.changed_ms||Date.now()))+'</span>'+
+    '<span style="color:var(--fg3)">'+esc(hp.detail||'')+'</span>';
+
+  var rl=hp.rules_list||[];
+  $('blocks-rules').innerHTML=rl.length?rl.map(function(r){
+    return '<div class="rulecard">'+icon(r.scope==='dns'?'globe':'shield',14)+
+      '<b>'+esc(r.label)+'</b>'+
+      pill(r.scope==='dns'?'DNS 规则':'路由规则','info')+
+      (r.enabled?pill('已启用','ok'):pill('已停用','na'))+
+      '<span style="color:var(--fg3)">规则集 '+esc(r.rulesets||'无')+'</span>'+
+      '<span style="margin-left:auto;color:var(--fg2);font-family:var(--mono)">'+
+        nf(r.patterns)+' 条规则</span></div>';
+  }).join(''):empty('未读到 reject 规则');
+
+  var tbk=b.top_blocked||[],tur=b.top_unresolved||[];
+  S.page.blocked=pager('pg-blocked',tbk.length,S.page.blocked,10,'blocked');
+  rowsHtml('blocks-blocked',pageSlice(tbk,S.page.blocked,10),function(x){
+    return '<div class="row g-top"'+dt('qname',x.q)+'><div class="key" title="'+esc(x.q)+'">'+esc(x.q)+'</div>'+
+      '<div class="num">'+nf(x.n)+'</div>'+
+      '<div class="num">'+pill(x.rule||'—','bad')+'</div></div>';
+  });
+  S.page.unresolved=pager('pg-unresolved',tur.length,S.page.unresolved,10,'unresolved');
+  rowsHtml('blocks-unresolved',pageSlice(tur,S.page.unresolved,10),function(x){
+    return '<div class="row g-top"'+dt('qname',x.q)+'><div class="key" title="'+esc(x.q)+'">'+esc(x.q)+'</div>'+
+      '<div class="num">'+nf(x.n)+'</div>'+
+      '<div class="num" style="color:var(--fg2)">'+pct(x.n/(b.unresolved||1))+'</div></div>';
+  });
+
+  rowsHtml('blocks-events',hp.events||[],function(x){
+    return '<div class="row" style="grid-template-columns:126px 1fr 58px 58px">'+
+      '<div class="ip">'+esc(tFull(x.ts))+'</div>'+
+      '<div class="nm" title="'+esc(x.detail)+'">'+esc(x.detail)+'</div>'+
+      '<div class="num">'+x.rules+'</div>'+
+      '<div class="num">'+nf(x.patterns)+'</div></div>';
+  });
+  $('blocks-note').innerHTML=
+    '<b>怎么看懂这页：</b>异常应答按来源分三类——命中 homeproxy reject 规则的'+
+    '<code>广告拦截</code> 是策略生效，属正常；客户端先查 <i>域名.lan</i> 产生的'+
+    '<code>本地域</code> NXDOMAIN 也是正常伴生查询；排除这两类，剩下的才是'+
+    '<code>真实解析失败</code>，通常是站点下线、域名拼错或上游解析异常。<br>'+
+    '<b>规则从哪来：</b>直接读 <code>/etc/config/homeproxy</code>，AdsAll 规则集从'+
+    'sing-box 当前的 <code>cache.db</code> 反编译，不用固化副本。配置或规则集一变，'+
+    '采集进程 30 秒内、页面每次打开都会重新同步并重新分类，下方「规则变更历史」可查。<br>'+
+    '<b>会不会影响上网：</b>不会。全程只读旁路，不参与转发、不发探测包、不改代理配置；'+
+    '「真实解析失败」只做记录与展示，系统不会自动去测或改规则。';
+  renderBlockTrend(d);
+  renderBlockClients(d);
+}
+
+/* ---------------- 流量排行 ---------------- */
+function ratioBar(v,max,cls){
+  var p=max?Math.min(100,v/max*100):0;
+  return '<div class="bar'+(cls?' '+cls:'')+'"><i style="width:'+p.toFixed(1)+'%"></i></div>';
+}
+function renderTraffic(d){
+  var sk=S.sort||'total';
+  var devBytes=function(x){ return sk==='down'?(x.bytes_in||0):
+    sk==='up'?(x.bytes_out||0):(x.bytes_in||0)+(x.bytes_out||0); };
+  var devs=(d.devices||[]).slice().sort(function(a,b){return devBytes(b)-devBytes(a);});
+  var hosts=d.traffic_hosts||[],cidr=d.top_cidr||[];
+  var up=0,down=0,cn=0;
+  devs.forEach(function(x){up+=x.bytes_out||0;down+=x.bytes_in||0;cn+=x.conns||0;});
+  var maxD=1;devs.forEach(function(x){if(devBytes(x)>maxD)maxD=devBytes(x);});
+  var maxH=hosts.length?hosts[0].bytes:1;
+  $('traffic-kpi').innerHTML=[
+    kpi({l:'总流量',v:hb(up+down),i:'download',f:'所选时段全部设备合计'}),
+    kpi({l:'下载 / 上传',v:hb(down)+' / '+hb(up),i:'activity',
+         f:'上行占 '+(up+down?(up/(up+down)*100).toFixed(1):'0')+'%'}),
+    kpi({l:'流量最大的设备',v:devs.length?(devs[0].device.display||'—'):'—',i:'users',
+         cls:'k-teal',f:devs.length?hb(devs[0].bytes_in+devs[0].bytes_out):'—'}),
+    kpi({l:'连接记录',v:nf(cn),i:'list',f:'窗口内的连接条数'}),
+    kpi({l:'主要目标',v:hosts.length,i:'globe',f:'窗口内流量最多的域名 / IP'})
+  ].join('');
+
+  rowsHtml('traffic-dev',devs.slice(0,20),function(x){
+    var v=x.device||{},t=(x.bytes_in||0)+(x.bytes_out||0),sv=devBytes(x);
+    return '<div class="row g-traffic click" data-goto="'+esc(v.ip)+'">'+
+      '<div class="devc">'+avatar(v,true)+
+        '<div style="min-width:0"><div class="nm">'+esc(v.display||v.ip)+'</div>'+
+        '<div class="sub">'+esc(v.ip)+' · '+esc(kindLabel(v.kind))+'</div></div></div>'+
+      '<div class="num" style="color:var(--down)">'+hb(x.bytes_in)+'</div>'+
+      '<div class="num" style="color:var(--up)">'+hb(x.bytes_out)+'</div>'+
+      '<div class="num">'+hb(t)+'</div>'+
+      '<div>'+ratioBar(sv,maxD)+'</div></div>';
+  });
+  rowsHtml('traffic-host',hosts.slice(0,20),function(x){
+    return '<div class="row g-host2"'+dt('host',x.k)+'><div style="min-width:0">'+
+      '<div class="key" title="'+esc(x.k)+'">'+esc(x.k)+'</div>'+
+      ratioBar(x.bytes,maxH,'g')+'</div>'+
+      '<div class="num">'+pill('连接 '+nf(x.conns),'plain')+'</div>'+
+      '<div class="num">'+hb(x.bytes)+'</div></div>';
+  });
+  rowsHtml('traffic-cidr',cidr,function(x){
+    return '<div class="row g-cidr"'+dt('cidr',x.k)+'><div class="key">'+esc(x.k)+'</div>'+
+      '<div class="num">'+nf(x.conns)+'</div>'+
+      '<div class="num">'+hb(x['in'])+'</div></div>';
+  });
+  /* 下载 / 上传各自单独排名（不按合计，避免上行被大下载淹没） */
+  var dRank=devs.slice().sort(function(a,b){return (b.bytes_in||0)-(a.bytes_in||0);}).slice(0,10);
+  var uRank=devs.slice().sort(function(a,b){return (b.bytes_out||0)-(a.bytes_out||0);}).slice(0,10);
+  var maxDown=dRank.length?(dRank[0].bytes_in||0):1,maxUp=uRank.length?(uRank[0].bytes_out||0):1;
+  function devRank(x,val,max,color){
+    var v=x.device||{};
+    return '<div class="row g-rank click" data-goto="'+esc(v.ip)+'"><div style="min-width:0">'+
+      '<div class="nm">'+esc(v.display||v.ip)+'</div><div class="sub">'+esc(v.ip)+'</div></div>'+
+      '<div class="num" style="color:'+color+'">'+hb(val)+'</div>'+
+      '<div>'+ratioBar(val,max,'g')+'</div></div>';
+  }
+  rowsHtml('rank-dev-down',dRank,function(x){return devRank(x,x.bytes_in||0,maxDown,'var(--down)');});
+  rowsHtml('rank-dev-up',uRank,function(x){return devRank(x,x.bytes_out||0,maxUp,'var(--up)');});
+  var hDown=hosts.slice().sort(function(a,b){return (b['in']||0)-(a['in']||0);}).slice(0,10);
+  var hUp=hosts.slice().sort(function(a,b){return (b.out||0)-(a.out||0);}).slice(0,10);
+  var maxHD=hDown.length?(hDown[0]['in']||0):1,maxHU=hUp.length?(hUp[0].out||0):1;
+  function hostRank(x,val,max,color){
+    return '<div class="row g-rank"'+dt('host',x.k)+'><div style="min-width:0">'+
+      '<div class="key" title="'+esc(x.k)+'">'+esc(x.k)+'</div>'+
+      '<div class="sub">'+nf(x.conns)+' 条连接</div></div>'+
+      '<div class="num" style="color:'+color+'">'+hb(val)+'</div>'+
+      '<div>'+ratioBar(val,max,'g')+'</div></div>';
+  }
+  rowsHtml('rank-host-down',hDown,function(x){return hostRank(x,x['in']||0,maxHD,'var(--down)');});
+  rowsHtml('rank-host-up',hUp,function(x){return hostRank(x,x.out||0,maxHU,'var(--up)');});
+
+  $('traffic-note').innerHTML='<b>怎么看：</b>下行是设备收到的字节，上行是设备发出的字节。'+
+    '上行明显大于下行通常意味着上传、备份或 PT 做种；下行大则是观看或下载。'+
+    '手机 App 普遍共用 CDN 域名，个别目标流量特别大是正常现象。'+
+    '数据来自只读 conntrack 采样，不含报文内容。';
+}
+
+/* ---------------- 总览 ---------------- */
+function kpi(o){
+  /* 按视觉宽度（中文算两格）自动缩字号，长数值不再折行 */
+  var raw=String(o.v==null?'':o.v).replace(/<[^>]*>/g,''),vw=0;
+  for(var vi=0;vi<raw.length;vi++) vw+=raw.charCodeAt(vi)>255?2:1;
+  var vc='kpi-value'+(vw>16?' tiny':vw>10?' compact':'');
+  return '<div class="kpi '+(o.cls||'')+'"'+
+    (o.nav?' data-navto="'+o.nav+'" style="cursor:pointer"':'')+
+    (o.detail?' data-detail="'+esc(o.detail)+'" data-dkey="'+esc(o.dkey||'')+'" style="cursor:pointer"':'')+
+    '><div class="kpi-top">'+
+    '<div class="kpi-ic">'+icon(o.i||'activity',14)+'</div><div class="kpi-label">'+esc(o.l)+'</div></div>'+
+    '<div class="'+vc+'">'+o.v+(o.u?'<span class="kpi-unit">'+esc(o.u)+'</span>':'')+'</div>'+
+    '<div class="kpi-foot'+(o.spark?' with-spark':'')+'">'+esc(o.f||'')+'</div>'+
+    (o.spark?'<div class="kpi-spark">'+o.spark+'</div>':'')+'</div>';
+}
+function renderOverview(d){
+  var s=d.summary||{},tl=d.dns_timeline||[],tr=d.trend||[];
+  var sparkDns=spark(tl.map(function(x){return x.n;}),'var(--accent)');
+  var sparkFlow=spark(tr.map(function(x){return (x.out||0)+(x['in']||0);}),'var(--teal)');
+  var totalQ=s.queries||0,blocked=s.blocked||0;
+  var bs=d.block_stats||{};
+  var hpOff=(d.hp&&d.hp.available===0);
+  $('kpi-grid').innerHTML=[
+    kpi({l:'DNS 查询',v:nf(totalQ),i:'globe',nav:'queries',f:'全部客户端合计 · 点击查看查询日志',spark:sparkDns}),
+    kpi({l:'活跃客户端',v:nf(s.clients||0),i:'users',cls:'k-teal',nav:'clients',
+         f:'设备名单共 '+(s.catalog||0)+' 台 · 点击查看全部设备'}),
+    kpi({l:hpOff?'DNS 异常':'广告 / 规则拦截',
+         v:nf(hpOff?((s.nx||0)+(s.ref||0)):(bs.blocked||0)),i:'shield',cls:'k-bad',nav:'blocks',
+         f:hpOff?'未安装 homeproxy，暂不做拦截归因':
+           ('占 DNS 异常 '+Number(bs.blocked_pct||0).toFixed(1)+'% · 点击查看详情')}),
+    kpi({l:'平均响应',v:(s.avg_ms!=null?Number(s.avg_ms).toFixed(1):'—'),u:'ms',i:'clock',nav:'queries',
+         cls:(s.avg_ms<20?'k-ok':s.avg_ms<100?'k-warn':'k-bad'),f:'成功率 '+pct(s.reply_rate)+' · 点击查看查询明细'}),
+    kpi({l:'总流量',v:hb((s.bytes_out||0)+(s.bytes_in||0)),i:'download',nav:'traffic',
+         f:'所选时段 · 点击查看流量排行'}),
+    kpi({l:'数据库',v:hb(s.db_bytes),i:'db',nav:'system',f:nf(s.conns||0)+' 条连接 · 点击查看系统信息'})
+  ].join('');
+
+  /* DNS 活动图 */
+  var bc=barChart(tl,function(r){
+    return [{v:Math.max(0,(r.n||0)-(r.blocked||0)),color:'var(--accent)',color2:'var(--accent2)'},
+            {v:r.blocked||0,color:'var(--bad)'}];
+  },function(r){return tShort(r.t)+' · '+nf(r.n)+' 次查询 / '+nf(r.blocked)+' 异常';});
+  $('chart-dns').innerHTML=bc.html||empty('该时段没有 DNS 记录');
+  $('axis-dns').innerHTML=axisLabels(tl,6);
+  $('dnschart-sub').textContent='按小时统计 · 共 '+tl.length+' 小时';
+  $('dnschart-total').textContent='最忙一小时 '+nf(bc.max)+' 次';
+
+  /* 流量图 */
+  var fc=barChart(tr,function(r){
+    return [{v:r['in']||0,color:'var(--down)'},{v:r.out||0,color:'var(--up)'}];
+  },function(r){return tShort(r.t)+' · ↓'+hb(r['in'])+' ↑'+hb(r.out);});
+  $('chart-traffic').innerHTML=fc.html||empty('该时段没有流量记录');
+  $('axis-traffic').innerHTML=axisLabels(tr,6);
+  $('flowchart-sub').textContent='按小时统计 · 共 '+tr.length+' 小时';
+  $('flowchart-total').textContent='单小时最高 '+hb(fc.max);
+
+  /* 活跃设备 Top 8 */
+  var devs=(d.devices||[]).filter(function(x){return x.n>0;}).slice(0,8);
+  var maxN=devs.length?devs[0].n:1;
+  rowsHtml('ov-clients',devs,function(x){
+    var v=x.device||{},p=maxN?x.n/maxN*100:0;
+    return '<div class="row click" style="grid-template-columns:minmax(0,1fr) 76px 76px" data-goto="'+esc(v.ip)+'">'+
+      '<div class="devc">'+avatar(v,true)+'<div style="min-width:0;flex:1">'+
+        '<div class="nm">'+esc(v.display||v.ip)+'</div>'+
+        '<div class="bar"><i style="width:'+p.toFixed(1)+'%"></i></div></div></div>'+
+      '<div class="num">'+nf(x.n)+'</div>'+
+      '<div class="num" style="color:var(--fg2)">'+pct(x.n/(s.queries||1))+'</div></div>';
+  });
+
+  /* DNS 域名 Top 8 */
+  rowsHtml('ov-domains',(d.dns||[]).slice(0,8),function(q){
+    var rate=q.n?Math.round(q.replied/q.n*100):0;
+    return '<div class="row g-top"'+dt('qname',q.q)+'><div class="key" title="'+esc(q.q)+'">'+esc(q.q)+'</div>'+
+      '<div class="num">'+nf(q.n)+'</div><div class="num">'+pill(rate+'%',rateCls(rate))+'</div></div>';
+  });
+
+  /* 广告拦截概览（取代原线路质量面板） */
+  var bsv=d.block_stats||{},tbv=bsv.top_blocked||[];
+  if(hpOff)tbv=[];
+  rowsHtml('ov-blocked',hpOff?[]:tbv.slice(0,6),function(x){
+    return '<div class="row g-top"'+dt('qname',x.q)+'><div class="key" title="'+esc(x.q)+'">'+esc(x.q)+'</div>'+
+      '<div class="num">'+nf(x.n)+'</div>'+
+      '<div class="num">'+pct(bsv.blocked?x.n/bsv.blocked:0)+'</div></div>';
+  });
+  /* 最近查询 */
+  rowsHtml('ov-recent',(d.dns_recent||[]).slice(0,8),function(r){
+    return '<div class="row g-log" style="font-size:11.5px"'+dt('qname',r.q)+'>'+
+      '<div class="ip">'+esc(tTime(r.ts))+'</div>'+
+      '<div class="nm" style="color:var(--fg2)">'+devLink(r.ip,r.name||r.ip)+'</div>'+
+      '<div class="key" title="'+esc(r.q)+'">'+esc(r.q)+'</div>'+
+      '<div class="ip">'+qname(r.qtype)+'</div>'+
+      '<div class="num" title="rcode='+r.rcode+'">'+clsPill(r.cls,r.rule)+'</div>'+
+      '<div class="num c-ans" style="color:var(--fg2)">'+(r.ms==null?'—':Number(r.ms).toFixed(1)+'ms')+'</div></div>';
+  });
+}
+
+/* ---------------- 通用条目详情 ---------------- */
+/* 通用详情支持的实体类型（服务类别 / 代理结论已随对应模块停用） */
+var DETAIL_IC = {host:'globe',qname:'list',cidr:'globe'};
+var DETAIL_LABEL = {host:'域名 / IP',qname:'DNS 域名',cidr:'目的网段'};
+function renderDetail(x,d){
+  var s=x.summary||{},devs=x.devices||[],tl=x.timeline||[],cs=x.conns||[],
+      ds=x.dns||[],now=(d&&d.now_ms)||Date.now();
+  var label=DETAIL_LABEL[x.type]||'条目',key=x.key||'',
+      isQ=(x.type==='qname');
+  $('page-title').textContent=x.title||(label+' · '+key);
+  $('page-sub').textContent='关联设备、连接时间、分时段上下行流量与 DNS 明细';
+  $('detail-crumb').textContent=label+' · '+key;
+  $('d2-head').innerHTML=
+    '<div class="av" style="background:hsla('+hue(key)+',62%,55%,.15);color:hsl('+hue(key)+',70%,68%)">'+
+      icon(DETAIL_IC[x.type]||'globe',20)+'</div>'+
+    '<div class="hero-tx"><h2>'+esc(key)+' '+pill(label,'info')+'</h2>'+
+      '<div class="ip-line"><span>'+esc(label)+'</span>'+
+      '<span>最近 '+Math.round(S.since/3600)+' 小时</span></div>'+
+      '<div class="hero-badges">'+
+      (s.first_ms?pill('首次 '+tShort(s.first_ms),'plain'):'')+
+      (s.last_ms?pill('最近 '+ago(s.last_ms,now),'plain'):'')+'</div></div>'+
+    '<div class="hero-side">总流量<br><b style="color:var(--fg);font-size:15px">'+
+      hb(s.bytes_total)+'</b><br>↓'+hb(s.bytes_in)+' ↑'+hb(s.bytes_out)+'</div>';
+
+  $('d2-kpi').innerHTML=(isQ?[
+    kpi({l:'查询总数',v:nf(s.dns||0),i:'globe',f:'所选时段内全部客户端合计'}),
+    kpi({l:'关联设备',v:nf(devs.length),i:'users',cls:'k-teal',f:'查询过这个域名的设备'}),
+    kpi({l:'查询明细',v:nf(ds.length),i:'list',f:'下方列出最近 60 条'}),
+    kpi({l:'连接记录',v:nf(s.conns||0),i:'download',f:'按域名反查到的连接'}),
+    kpi({l:'首次查询',v:s.first_ms?tShort(s.first_ms):'—',i:'clock',f:'所选时段内'}),
+    kpi({l:'最近查询',v:s.last_ms?ago(s.last_ms,now):'—',i:'clock',f:'距现在'})
+  ]:[
+    kpi({l:'总流量',v:hb(s.bytes_total||0),i:'download',f:'所选时段合计'}),
+    kpi({l:'下载 / 上传',v:hb(s.bytes_in)+' / '+hb(s.bytes_out),i:'activity',
+         f:'上行占 '+(s.bytes_total?((s.bytes_out||0)/s.bytes_total*100).toFixed(1):'0')+'%'}),
+    kpi({l:'连接记录',v:nf(s.conns||0),i:'list',cls:'k-teal',f:'下方列出最近 60 条'}),
+    kpi({l:'关联设备',v:nf(devs.length),i:'users',f:'按流量排序'}),
+    kpi({l:'DNS 查询',v:nf(s.dns||0),i:'globe',f:ds.length?'下方列出最近 60 条':'该时段无查询记录'}),
+    kpi({l:'首次记录',v:s.first_ms?tShort(s.first_ms):'—',i:'clock',f:'所选时段内最早一条'})
+  ]).join('');
+
+  var bc=barChart(tl,function(r){
+    return isQ?[{v:r.conns||0,color:'var(--accent)'}]:
+      [{v:r['in']||0,color:'var(--down)'},{v:r.out||0,color:'var(--up)'}];
+  },function(r){return isQ?
+      tShort(r.t)+' · '+nf(r.conns)+' 次查询':
+      tShort(r.t)+' · ↓'+hb(r['in'])+' ↑'+hb(r.out)+' · '+nf(r.conns)+' 条连接';});
+  $('d2-timeline').innerHTML=bc.html||empty(isQ?'该时段没有查询记录':'该时段没有连接记录');
+  $('d2-axis').innerHTML=axisLabels(tl,7);
+  $('d2-timeline-sub').textContent=isQ?
+    ('按小时统计 · 共 '+tl.length+' 小时 · 最忙一小时 '+nf(bc.max)+' 次查询'):
+    ('按小时统计 · 共 '+tl.length+' 小时 · 单小时最高 '+hb(bc.max));
+  $('t-d2-timeline').innerHTML=icon(isQ?'globe':'activity',15)+(isQ?'查询活动趋势':'分时段流量');
+
+  rowsHtml('d2-devices',devs,function(v){
+    return '<div class="row g-d2dev"><div style="min-width:0">'+
+      '<div class="nm">'+devLink(v.ip,v.name||v.ip)+'</div>'+
+      '<div class="sub">'+esc(v.ip)+'</div></div>'+
+      '<div class="num">'+nf(v.conns)+'</div>'+
+      '<div class="num" style="color:var(--up)">'+(isQ?'—':hb(v.out))+'</div>'+
+      '<div class="num" style="color:var(--down)">'+(isQ?'—':hb(v['in']))+'</div>'+
+      '<div class="num" style="color:var(--fg3);font-size:10.5px">'+
+        (v.last_ms?tShort(v.last_ms):'—')+'</div></div>';
+  });
+  $('d2-conns-sub').textContent=isQ?
+    (cs.length?'最近 '+cs.length+' 条 · 共 '+nf(s.conns||0)+' 条':'这个域名没有产生连接记录'):
+    ('最近 '+cs.length+' 条 · 共 '+nf(s.conns||0)+' 条');
+  if(isQ&&!cs.length)$('d2-conns').innerHTML=
+    empty('被广告规则拦截或仅做解析的域名不会建立连接；上面已按小时列出查询趋势');
+  rowsHtml('d2-conns',cs,function(c){
+    var dur=c.dur_ms!=null?((c.dur_ms>=60000)?(c.dur_ms/60000).toFixed(1)+'分':
+      (c.dur_ms/1000).toFixed(0)+'秒'):'—';
+    return '<div class="row g-d2conn"><div class="ip" title="'+esc(tFull(c.ts))+'">'+
+      esc(tShort(c.ts))+'</div>'+
+      '<div class="nm">'+devLink(c.ip,c.name||c.ip)+'</div>'+
+      '<div style="min-width:0"><div class="key" title="'+esc(c.dst)+'">'+esc(c.dst||'—')+'</div>'+
+      (c.host?'<div class="sub" title="'+esc(c.host)+'">'+esc(c.host)+'</div>':'')+'</div>'+
+      '<div class="num">'+(c.dport||'—')+'</div>'+
+      '<div class="num" style="color:var(--fg3)">'+dur+'</div>'+
+      '<div class="num" style="color:var(--up)">'+hb(c.out)+'</div>'+
+      '<div class="num" style="color:var(--down)">'+hb(c['in'])+'</div></div>';
+  });
+  rowsHtml('d2-dns',ds,function(r){
+    return '<div class="row g-d2dns"><div class="ip" title="'+esc(tFull(r.ts))+'">'+
+      esc(tTime(r.ts))+'</div>'+
+      '<div class="nm">'+devLink(r.ip,r.name||r.ip)+'</div>'+
+      '<div>'+rcodePill(r.rcode)+'</div>'+
+      '<div class="num" style="color:var(--fg2)">'+(r.ms==null?'—':Number(r.ms).toFixed(1)+'ms')+'</div>'+
+      '<div class="num" style="color:var(--fg3)" title="'+esc(r.answers)+'">'+
+      esc((r.answers||'—').slice(0,20))+'</div></div>';
+  });
+  $('d2-note').innerHTML='<b>这些数字怎么来的：</b>连接明细来自 conntrack 采样，'+
+    '「上行」是设备发出去的字节，「下行」是设备收到的字节；时长是该连接首末两次采样之差。'+
+    'DNS 明细来自被动嗅探的查询与应答配对。<br>'+
+    '<b>时间范围：</b>最近 '+Math.round(S.since/3600)+' 小时，连接与查询各展示最近 60 条；'+
+    '要查更长历史可在路由器上执行 <code>netmon-report top --by host --since 7d</code>。<br>'+
+    '<b>下钻：</b>点设备名看该设备完整详情，点域名 / IP 继续看该目标，'+
+    '点左上角「返回」回到刚才的页面。'+
+    (x.note?'<br><b>接口说明：</b>'+esc(x.note):'');
+}
+
+/* ---------------- 客户端列表 ---------------- */
+function devMatch(x){
+  var v=x.device||{};
+  if(S.filter==='active'&&!x.active)return false;
+  if(S.filter==='static'&&v.source!==0)return false;
+  if(S.filter==='auto'&&v.source<3)return false;
+  if(S.filter==='fav'&&!favHas('ip',v.ip||''))return false;
+  if(!S.q)return true;
+  /* 备注也参与搜索，方便用自定义名称找设备 */
+  return [v.display,v.name,v.ip,v.mac,v.vendor,kindLabel(v.kind),x.top_q,
+          noteGet('ip',v.ip||'')].join(' ').toLowerCase().indexOf(S.q)>=0;
+}
+function renderClients(d){
+  var all=d.devices||[],list=all.filter(devMatch),now=d.now_ms||Date.now();
+  list.sort(function(a,b){
+    if(S.csort==='name')return String((a.device||{}).display||'')
+      .localeCompare(String((b.device||{}).display||''),'zh-CN');
+    if(S.csort==='traffic')return ((b.bytes_in||0)+(b.bytes_out||0))-
+      ((a.bytes_in||0)+(a.bytes_out||0));
+    if(S.csort==='recent')return (b.last_ms||0)-(a.last_ms||0);
+    return (b.n||0)-(a.n||0);
+  });
+  var active=all.filter(function(x){return x.active;}).length;
+  var named=all.filter(function(x){return x.device&&x.device.source<3;}).length;
+  $('clients-count').innerHTML='共 <b>'+all.length+'</b> 台 · 活跃 <b>'+active+'</b> 台 · 已命名 <b>'+named+'</b> 台'+(S.q?' · 筛选后 <b>'+list.length+'</b> 台':'');
+  $('clients-grid').style.display=S.layout==='card'?'':'none';
+  $('clients-table').style.display=S.layout==='list'?'':'none';
+  if(!list.length){
+    $('clients-grid').innerHTML=empty('没有匹配的设备');
+    $('clients-list').innerHTML=empty('没有匹配的设备');return;
+  }
+  var maxN=0;all.forEach(function(x){if(x.n>maxN)maxN=x.n;});if(!maxN)maxN=1;
+  $('clients-grid').innerHTML=list.map(function(x){
+    var v=x.device||{},p=x.n/maxN*100;
+    return '<div class="dcard'+(x.active?'':' inactive')+'" data-goto="'+esc(v.ip)+'">'+
+      '<div class="dcard-top">'+avatar(v)+'<div class="dcard-tx">'+
+        '<div class="dcard-nm" title="'+esc(v.name||v.display)+'">'+esc(v.display||v.ip)+'</div>'+
+        '<div class="dcard-ip">'+esc(v.ip)+(v.mac?' · '+esc(v.mac):'')+'</div></div>'+
+        (x.active?pill('活跃','ok'):pill('暂无活动','na'))+
+        starHtml('ip',v.ip||'')+'</div>'+
+      (noteGet('ip',v.ip||'')?'<div class="dcard-note">'+esc(noteGet('ip',v.ip||''))+'</div>':'')+
+      '<div class="dcard-stats">'+
+        '<div class="dstat"><div class="l">DNS 查询</div><div class="v">'+nf(x.n)+'</div></div>'+
+        '<div class="dstat"><div class="l">不同域名</div><div class="v">'+nf(x.hosts)+'</div></div></div>'+
+      '<div class="bar"><i style="width:'+p.toFixed(1)+'%"></i></div>'+
+      '<div class="dcard-meta">'+pill(kindLabel(v.kind),'plain')+srcPill(v.source)+
+        (v.vendor?pill(v.vendor,'plain'):'')+
+        (x.stale_static?'<span class="pill warn" title="设备仍在使用旧地址">静态未生效 · '+esc(x.active_ip||'')+'</span>':'')+
+        (v.multi_nic?'<span class="pill info" title="同设备其它网卡：'+esc(v.peers||'')+'">多网卡</span>':'')+
+        (x.last_ms?'<span style="color:var(--fg3);font-size:10.5px">'+ago(x.last_ms,now)+'</span>':'')+'</div>'+
+      '</div>';
+  }).join('');
+  $('clients-list').innerHTML=list.map(function(x){
+    var v=x.device||{},rate=x.n?Math.round(x.ok_rate*100):0;
+    return '<div class="row g-devlist click" data-goto="'+esc(v.ip)+'">'+
+      '<div class="devc">'+avatar(v,true)+'<div style="min-width:0"><div class="nm">'+esc(v.display||v.ip)+'</div>'+
+        '<div class="sub">'+esc(kindLabel(v.kind))+(v.vendor?' · '+esc(v.vendor):'')+
+          (noteGet('ip',v.ip||'')?' · '+esc(noteGet('ip',v.ip||'')):'')+'</div></div></div>'+
+      starHtml('ip',v.ip||'')+
+      '<div class="ip c-ip">'+esc(v.ip)+'</div>'+
+      '<div class="num">'+nf(x.n)+'</div><div class="num c-hosts" style="color:var(--fg2)">'+nf(x.hosts)+'</div>'+
+      '<div class="num c-rate">'+pill(rate+'%',x.n?rateCls(rate):'na')+'</div>'+
+      '<div class="num c-bw" style="color:var(--fg2)">'+hb((x.bytes_in||0)+(x.bytes_out||0))+'</div>'+
+      '<div class="num" style="color:var(--fg3);font-size:10.5px">'+(x.last_ms?ago(x.last_ms,now):'—')+'</div></div>';
+  }).join('');
+}
+
+/* ---------------- 设备详情 ---------------- */
+function renderClient(c,d){
+  var v=c.device||{},s=c.summary||{},bs=c.block_stats||{},now=(d&&d.now_ms)||Date.now();
+  /* 归并/多网卡等状态在 dashboard 的 devices 行里，详情接口不重复带 */
+  var dv=((d&&d.devices)||[]).filter(function(x){return x.device&&x.device.ip===v.ip;})[0]||{};
+  $('page-title').textContent=v.display||v.ip;
+  $('page-sub').textContent='设备详情 · '+(v.ip||'')+' · 点击查看该设备的完整 DNS 行为';
+  $('detail-head').innerHTML=avatar(v)+
+    '<div class="hero-tx"><h2>'+esc(v.display||v.ip)+
+      (s.n>0?pill('活跃','ok'):pill('暂无活动','na'))+'</h2>'+
+      '<div class="ip-line"><span>'+esc(v.ip)+'</span>'+
+        (v.mac?'<span>'+esc(v.mac)+'</span>':'')+
+        (v.vendor?'<span>'+esc(v.vendor)+'</span>':'')+'</div>'+
+      '<div class="hero-badges">'+pill(kindLabel(v.kind),'info')+srcPill(v.source)+
+        (v.name&&v.name!==v.display?pill(v.name,'plain'):'')+
+        (dv.stale_static?pill('静态分配未生效','warn'):'')+
+        (v.multi_nic?pill('多网卡','info'):'')+'</div>'+
+      (dv.stale_static?'<div class="ip-line" style="color:var(--warn)">配置地址 '+esc(v.ip)+
+        ' · 实际在用 '+esc(dv.active_ip||'')+'</div>':'')+
+      (v.aliases?'<div class="ip-line">历史地址 '+esc(v.aliases)+'（数据已合并）</div>':'')+
+      (v.peers?'<div class="ip-line">同设备其它网卡 '+esc(v.peers)+'</div>':'')+'</div>'+
+    '<div class="hero-side">最近活跃<br><b style="color:var(--fg);font-size:13px">'+
+      (s.last_ms?ago(s.last_ms,now):'—')+'</b><br>'+(s.last_ms?esc(tFull(s.last_ms)):'')+'</div>';
+
+  var rate=s.n?Math.round(s.reply_rate*100):0;
+  $('detail-kpi').innerHTML=[
+    kpi({l:'DNS 查询',v:nf(s.n||0),i:'globe',f:'所选时段内'}),
+    kpi({l:'不同域名',v:nf(s.hosts||0),i:'list',cls:'k-teal',f:'去重后的域名数'}),
+    kpi({l:'应答率',v:rate,u:'%',i:'shield',cls:rate>=95?'k-ok':rate>=80?'k-warn':'k-bad',
+         f:nf(s.replied||0)+' 次收到应答'}),
+    kpi({l:'平均耗时',v:(s.avg_ms!=null?Number(s.avg_ms).toFixed(2):'—'),u:'ms',i:'clock',
+         f:'最慢 '+(s.max_ms!=null?Number(s.max_ms).toFixed(0)+' ms':'—')}),
+    kpi({l:'异常应答',v:nf((s.nx||0)+(s.ref||0)),i:'alert',cls:'k-warn',
+         f:'广告拦截 '+nf(bs.blocked||0)+' · 真实失败 '+nf(bs.unresolved||0)}),
+    kpi({l:'连接流量',v:hb((s.bytes_in||0)+(s.bytes_out||0)),i:'download',
+         f:nf(s.conns||0)+' 条连接 · ↓'+hb(s.bytes_in)+' ↑'+hb(s.bytes_out)})
+  ].join('');
+
+  var tl=c.timeline||[];
+  var bc=barChart(tl,function(r){
+    var bad=(r.nx||0)+(r.ref||0);
+    return [{v:Math.max(0,(r.n||0)-bad),color:'var(--accent)',color2:'var(--accent2)'},{v:bad,color:'var(--bad)'}];
+  },function(r){return tShort(r.t)+' · '+nf(r.n)+' 次 · 均 '+(r.ms==null?'—':Number(r.ms).toFixed(1)+'ms');});
+  $('detail-timeline').innerHTML=bc.html||empty('该时段没有查询');
+  $('detail-axis').innerHTML=axisLabels(tl,7);
+  $('detail-timeline-sub').textContent='按小时统计 · 共 '+tl.length+' 小时 · 最忙一小时 '+nf(bc.max)+' 次';
+
+  /* 该设备自己的上下行趋势：与总览口径一致，下行=下载、上行=上传 */
+  var ft=c.traffic_timeline||[];
+  var fc=barChart(ft,function(r){
+    return [{v:r['in']||0,color:'var(--down)'},{v:r.out||0,color:'var(--up)'}];
+  },function(r){return tShort(r.t)+' · ↓'+hb(r['in'])+' ↑'+hb(r.out)+' · '+nf(r.conns)+' 条连接';});
+  $('detail-flow').innerHTML=fc.html||empty('该时段没有流量记录');
+  $('detail-flow-axis').innerHTML=axisLabels(ft,7);
+  $('detail-flow-sub').textContent='按小时统计 · 共 '+ft.length+' 小时 · 单小时最高 '+hb(fc.max);
+  var fsum=0; ft.forEach(function(r){fsum+=(r['in']||0)+(r.out||0);});
+  $('detail-flow-total').textContent='合计 '+hb(fsum);
+
+  var doms=c.top_domains||[],maxD=doms.length?doms[0].n:1;
+  S.page.domains=pager('pg-domains',doms.length,S.page.domains,10,'domains');
+  rowsHtml('detail-domains',pageSlice(doms,S.page.domains,10),function(x){
+    var bad=(x.nx||0)+(x.ref||0);
+    return '<div class="row g-top"'+dt('qname',x.q)+'><div style="min-width:0">'+
+      '<div class="key" title="'+esc(x.q)+'">'+esc(x.q)+'</div>'+
+      '<div class="bar'+(bad?' r':' g')+'"><i style="width:'+(maxD?x.n/maxD*100:0).toFixed(1)+'%"></i></div></div>'+
+      '<div class="num">'+nf(x.n)+'</div>'+
+      '<div class="num">'+(bad?pill(bad+' 异常','warn'):pill('正常','ok'))+'</div></div>';
+  });
+
+  /* 环形图：应答码分布 + 图例（含查询类型） */
+  var colors=['var(--ok)','var(--warn)','var(--bad)','var(--accent2)'];
+  var parts=(c.rcodes||[]).map(function(r,i){
+    return {n:r.n,color:colors[i%colors.length],label:(RCODE[r.r]||{t:'RCODE '+r.r}).t};
+  });
+  var tot=(c.rcodes||[]).reduce(function(a,b){return a+b.n;},0);
+  $('detail-donut').innerHTML=donut(parts,tot,nf(tot));
+  var lg=parts.map(function(p){return '<div class="li2"><i style="background:'+p.color+'"></i>'+
+    '<span>'+esc(p.label)+'</span><b>'+nf(p.n)+'</b></div>';}).join('');
+  (c.qtypes||[]).forEach(function(q){
+    var pctv=tot?Math.round(q.n/tot*100):0;
+    lg+='<div class="li2"><i style="background:var(--accent)"></i><span>'+qname(q.t)+
+      ' 查询</span><b>'+nf(q.n)+' · '+pctv+'%</b></div>';
+  });
+  $('detail-legend').innerHTML=lg||empty();
+
+  var traf=c.traffic||[];
+  S.page.traffic=pager('pg-traffic',traf.length,S.page.traffic,10,'traffic');
+  rowsHtml('detail-traffic',pageSlice(traf,S.page.traffic,10),function(x){
+    return '<div class="row g-traf"'+dt('host',x.k)+'><div class="key" title="'+esc(x.k)+'">'+esc(x.k)+'</div>'+
+      '<div class="num">'+nf(x.conns)+'</div>'+
+      '<div class="num c-out" style="color:var(--fg2)">'+hb(x.out)+'</div>'+
+      '<div class="num">'+hb(x['in'])+'</div></div>';
+  });
+
+  var rec=(c.recent||[]).filter(function(r){
+    return !S.dq||[r.q,r.answers].join(' ').toLowerCase().indexOf(S.dq)>=0;
+  });
+  S.page.recent=pager('pg-recent',rec.length,S.page.recent,15,'recent');
+  $('detail-recent-sub').textContent='最近 '+rec.length+' 条 · 每页 15 条';
+  rowsHtml('detail-recent',pageSlice(rec,S.page.recent,15),function(r){
+    return '<div class="row g-log2"'+dt('qname',r.q)+'><div class="ip">'+esc(tShort(r.ts).slice(6))+'</div>'+
+      '<div class="key" title="'+esc(r.q)+'">'+esc(r.q)+'</div>'+
+      '<div class="key" style="color:var(--fg3)" title="'+esc(r.answers)+'">'+esc(r.answers||'—')+'</div>'+
+      '<div class="ip">'+qname(r.qtype)+'</div>'+
+      '<div title="rcode='+r.rcode+'">'+clsPill(r.cls,r.rule)+'</div>'+
+      '<div class="num c-ms" style="color:var(--fg2)">'+(r.ms==null?'—':Number(r.ms).toFixed(2)+'ms')+'</div>'+
+      '<div class="num c-ans" style="color:var(--fg3)">'+esc(r.answers&&r.answers.indexOf(',')>=0?r.answers.split(',').length:(r.answers||'0'))+'</div></div>';
+  });
+}
+
+/* ---------------- 查询日志 ---------------- */
+function renderQueries(d){
+  var all=d.dns_recent||[],now=d.now_ms||Date.now();
+  var list=all.filter(function(r){
+    if(S.rcode!=='all'&&String(r.rcode)!==S.rcode)return false;
+    var cl=r.cls||0;
+    if(S.cls==='ok'&&cl>=1)return false;
+    if(S.cls!=='all'&&S.cls!=='ok'&&String(cl)!==S.cls)return false;
+    if(!S.qq)return true;
+    return [r.q,r.name,r.ip,r.answers].join(' ').toLowerCase().indexOf(S.qq)>=0;
+  });
+  S.page.queries=pager('pg-queries',list.length,S.page.queries,20,'queries');
+  $('queries-count').innerHTML='显示 <b>'+list.length+'</b> / '+all.length+' 条最近记录 · 每页 20 条';
+  rowsHtml('queries-body',pageSlice(list,S.page.queries,20),function(r){
+    return '<div class="row g-log2"'+dt('qname',r.q)+'><div class="ip" title="'+esc(tFull(r.ts))+'">'+esc(tTime(r.ts))+'</div>'+
+      '<div class="nm" style="color:var(--fg2)">'+devLink(r.ip,r.name||r.ip)+'</div>'+
+      '<div class="key" title="'+esc(r.q)+'">'+esc(r.q)+'</div>'+
+      '<div class="ip">'+qname(r.qtype)+'</div>'+
+      '<div title="rcode='+r.rcode+'">'+clsPill(r.cls,r.rule)+'</div>'+
+      '<div class="num c-ms" style="color:var(--fg2)">'+(r.ms==null?'—':Number(r.ms).toFixed(2)+'ms')+'</div>'+
+      '<div class="num c-ans" style="color:var(--fg3)" title="'+esc(r.answers)+'">'+esc((r.answers||'—').slice(0,18))+'</div></div>';
+  });
+  $('queries-note').innerHTML='<b>状态说明：</b>正常 = 解析成功；'+
+    '<code>NXDOMAIN</code> 域名不存在（常见于设备探测上线域名、.lan 后缀）；'+
+    '<code>REFUSED</code> 服务端拒答（多为分流策略主动拦截）。'+
+    '接口返回最近 200 条，前端每页 20 条；更长的历史请用 <code>netmon-report dns --since 7d</code>。';
+}
+
+/* ---------------- 域名排行 ---------------- */
+function renderDomains(d){
+  var dns=d.dns||[],maxD=dns.length?dns[0].n:1;
+  rowsHtml('domains-dns',dns,function(q){
+    var rate=q.n?Math.round(q.replied/q.n*100):0,bad=(q.nx||0)+(q.ref||0);
+    return '<div class="row g-dns"'+dt('qname',q.q)+'><div style="min-width:0"><div class="key" title="'+esc(q.q)+'">'+esc(q.q)+' '+clsPill(q.cls,q.rule)+'</div>'+
+      '<div class="bar'+(bad?' r':'')+'"><i style="width:'+(q.n/maxD*100).toFixed(1)+'%"></i></div></div>'+
+      '<div class="num">'+nf(q.n)+'</div><div class="num">'+pill(rate+'%',rateCls(rate))+'</div>'+
+      '<div class="num" style="color:'+(q.ms==null?'var(--fg3)':q.ms<10?'var(--ok)':q.ms<100?'var(--warn)':'var(--bad)')+'">'+
+      (q.ms==null?'—':Number(q.ms).toFixed(1)+'ms')+'</div>'+
+      '<div class="num c-note">'+(bad?pill(bad+' 异常','warn'):'<span style="color:var(--fg3)">—</span>')+'</div></div>';
+  });
+  var th=d.top_host||[],maxT=th.length?th[0].bytes:1;
+  rowsHtml('domains-traffic',th,function(x){
+    return '<div class="row g-top"'+dt('host',x.k)+'><div style="min-width:0"><div class="key" title="'+esc(x.k)+'">'+esc(x.k)+'</div>'+
+      '<div class="bar g"><i style="width:'+(maxT?x.bytes/maxT*100:0).toFixed(1)+'%"></i></div></div>'+
+      '<div class="num">'+nf(x.conns)+'</div><div class="num">'+hb(x.bytes)+'</div></div>';
+  });
+  var cid=d.top_cidr||[],maxC=0;cid.forEach(function(x){maxC=Math.max(maxC,(x['in']||0)+(x.out||0));});
+  rowsHtml('domains-cidr',cid,function(x){
+    return '<div class="row g-cidr"'+dt('cidr',x.k)+'><div style="min-width:0"><div class="key">'+esc(x.k)+'</div>'+
+      '<div class="bar"><i style="width:'+(maxC?((x['in']||0)+(x.out||0))/maxC*100:0).toFixed(1)+'%"></i></div></div>'+
+      '<div class="num">'+nf(x.conns)+'</div><div class="num">'+hb(x['in'])+'</div></div>';
+  });
+}
+
+/* ---------------- 系统 ---------------- */
+function renderSystem(d){
+  var s=d.summary||{},si=d.sysinfo||{},daily=d.daily||[];
+  var memPct=si.mem_total_kb?100*(1-si.mem_avail_kb/si.mem_total_kb):0;
+  var diskPct=si.disk_total_mb?100*(1-si.disk_free_mb/si.disk_total_mb):0;
+  $('sys-kpi').innerHTML=[
+    kpi({l:'运行时间',v:(si.uptime_s/86400).toFixed(1),u:'天',i:'clock',
+         f:'负载 '+(si.load||[]).join(' / ')}),
+    kpi({l:'内存使用',v:memPct.toFixed(0),u:'%',i:'activity',
+         cls:memPct>85?'k-bad':memPct>70?'k-warn':'k-ok',
+         f:hb((si.mem_total_kb-si.mem_avail_kb)*1024)+' / '+hb(si.mem_total_kb*1024)}),
+    kpi({l:'数据盘',v:diskPct.toFixed(0),u:'%',i:'db',
+         cls:diskPct>85?'k-bad':'',f:'可用 '+nf(si.disk_free_mb)+' MB'}),
+    kpi({l:'当前连接',v:nf(si.ct_total||0),i:'list',cls:'k-teal',
+         f:'TCP '+nf(si.ct_tcp)+' · UDP '+nf(si.ct_udp)}),
+    kpi({l:'已建立连接',v:nf(si.ct_established||0),i:'shield',
+         f:'conntrack 只读快照'})
+  ].join('');
+
+  rowsHtml('sys-iface',si.interfaces||[],function(x){
+    return '<div class="row g-iface"><div class="key">'+esc(x.name)+'</div>'+
+      '<div class="num" style="color:var(--down)">'+hb(x.rx_bytes)+'</div>'+
+      '<div class="num" style="color:var(--up)">'+hb(x.tx_bytes)+'</div>'+
+      '<div class="num">'+nf(x.rx_err+x.tx_err)+' / '+nf(x.rx_drop+x.tx_drop)+'</div></div>';
+  });
+  $('sys-conn').innerHTML=[
+    ['连接总数',nf(si.ct_total)],['TCP',nf(si.ct_tcp)],['UDP',nf(si.ct_udp)],
+    ['ESTABLISHED',nf(si.ct_established)],['接收包 / 发送包',
+      nf((si.interfaces||[]).reduce(function(a,b){return a+b.rx_pkts;},0))+' / '+
+      nf((si.interfaces||[]).reduce(function(a,b){return a+b.tx_pkts;},0))]
+  ].map(function(x){return '<div>'+esc(x[0])+'</div><div>'+esc(x[1])+'</div>';}).join('');
+
+  var mx=1;daily.forEach(function(x){mx=Math.max(mx,(x['in']||0)+(x.out||0));});
+  rowsHtml('sys-daily',daily,function(x){
+    var t=(x['in']||0)+(x.out||0);
+    return '<div class="row g-daily"><div class="key">'+esc(tShort(x.t).slice(0,5))+'</div>'+
+      '<div class="num" style="color:var(--down)">'+hb(x['in'])+'</div>'+
+      '<div class="num" style="color:var(--up)">'+hb(x.out)+'</div>'+
+      '<div class="num">'+nf(x.conns)+'</div>'+
+      '<div>'+ratioBar(t,mx,'g')+'</div></div>';
+  });
+
+  var kv=[
+    ['数据库体积',hb(s.db_bytes)],['连接记录',nf(s.conns)+' 行'],
+    ['DNS 记录',nf(s.dns)+' 行'],['已知设备',nf(s.catalog)+' 台'],
+    ['活跃客户端',nf(s.clients)+' 台'],['统计时段','最近 '+Math.round(S.since/3600)+' 小时'],
+    ['页面刷新',S.auto?'每 10 秒':'已暂停'],['服务时间',tFull(d.now_ms||Date.now())]
+  ];
+  $('system-db').innerHTML=kv.map(function(x){
+    return '<div>'+esc(x[0])+'</div><div>'+esc(x[1])+'</div>';}).join('');
+  $('system-src').innerHTML=
+    '<b>DNS 查询</b>：AF_PACKET 被动旁路嗅探 <code>br-lan</code>，'+
+    '经典 BPF 只放行 <code>udp/53</code>，程序崩溃不影响上网。<br>'+
+    '<b>设备身份</b>：静态地址分配 → DHCP 租约 → ARP / IPv6 邻居的 MAC 反查 → OUI 兜底；'+
+    '同一 MAC 换 IP 会自动合并，多网卡设备按 MAC 区分。<br>'+
+    '<b>连接流量</b>：只读 <code>/proc/net/nf_conntrack</code>，不改防火墙状态。<br>'+
+    '<b>系统状态</b>：只读 <code>/proc</code>，不产生额外探测流量。<br>'+
+    '<span style="color:var(--fg3)">homeproxy 为可选依赖，未安装时拦截归因自动降级。</span>';
+  $('system-cmd').innerHTML=
+    '<code>netmon-report status</code> 数据库概况<br>'+
+    '<code>netmon-report devices --since 24h -j</code> 设备清单<br>'+
+    '<code>netmon-report client --ip 192.168.1.100</code> 单台设备详情<br>'+
+    '<code>netmon-report detail --type qname --key example.com</code> 域名详情<br>'+
+    '<code>/etc/init.d/netmon status</code> 采集服务状态';
+}
+
+/* =====================================================================
+   go
+   ===================================================================== */
+initStatic();
+navigate();
+load();
+resetTimer();
+</script>
+</body>
+</html>

@@ -1,0 +1,136 @@
+/*
+ * test_ctparse.c - 用真实 conntrack 行验证解析器
+ *
+ * 这些样例全部来自路由器 /proc/net/nf_conntrack 实际抓取，
+ * 覆盖 tcp / udp / icmp / 无应答 / 有 mark 的情况。
+ */
+#include <stdio.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include "ctparse.h"
+
+static int fails = 0;
+
+#define CHECK(cond, fmt, ...) do { \
+    if (!(cond)) { printf("  FAIL: " fmt "\n", ##__VA_ARGS__); fails++; } \
+    else         { printf("  ok  : " fmt "\n", ##__VA_ARGS__); } \
+} while (0)
+
+static void t_tcp(void)
+{
+    printf("\n[tcp 双方向]\n");
+    char line[] = "ipv4     2 tcp      6 97 TIME_WAIT "
+                  "src=203.0.113.10 dst=59.82.113.219 sport=34458 dport=80 "
+                  "packets=5 bytes=972 "
+                  "src=59.82.113.219 dst=203.0.113.10 sport=80 dport=34458 "
+                  "packets=5 bytes=1396 [ASSURED] mark=0 zone=0 use=2";
+    ct_rec_t r;
+    int rc = ct_parse_line(line, &r);
+    CHECK(rc == 1, "解析成功");
+    CHECK(r.key.family == 4, "family=4");
+    CHECK(r.key.proto == IPPROTO_TCP, "proto=tcp");
+
+    char a[64], b[64];
+    inet_ntop(AF_INET, r.key.src, a, sizeof(a));
+    inet_ntop(AF_INET, r.key.dst, b, sizeof(b));
+    CHECK(strcmp(a, "203.0.113.10") == 0, "src=%s", a);
+    CHECK(strcmp(b, "59.82.113.219") == 0, "dst=%s", b);
+    CHECK(r.key.sport == 34458, "sport=%u", r.key.sport);
+    CHECK(r.key.dport == 80, "dport=%u", r.key.dport);
+    CHECK(r.byt_orig == 972, "上行字节=%llu", (unsigned long long)r.byt_orig);
+    CHECK(r.byt_repl == 1396, "下行字节=%llu", (unsigned long long)r.byt_repl);
+    CHECK(r.pkt_orig == 5 && r.pkt_repl == 5, "包数双向 5/5");
+    CHECK(r.have_reply == 1, "有应答方向");
+    CHECK(r.key.mark == 0, "mark=0");
+}
+
+static void t_udp(void)
+{
+    printf("\n[udp 本机 DNS]\n");
+    char line[] = "ipv4     2 udp      17 57 "
+                  "src=127.0.0.1 dst=127.0.0.1 sport=47218 dport=5333 "
+                  "packets=1 bytes=79 "
+                  "src=127.0.0.1 dst=127.0.0.1 sport=5333 dport=47218 "
+                  "packets=1 bytes=68 mark=0 zone=0 use=2";
+    ct_rec_t r;
+    CHECK(ct_parse_line(line, &r) == 1, "解析成功");
+    CHECK(r.key.proto == IPPROTO_UDP, "proto=udp");
+    CHECK(r.key.dport == 5333, "dport=5333");
+    CHECK(r.byt_orig == 79 && r.byt_repl == 68, "字节 79/68");
+}
+
+static void t_icmp(void)
+{
+    printf("\n[icmp ping]\n");
+    char line[] = "ipv4     2 icmp     1 16 "
+                  "src=192.168.1.245 dst=8.8.8.8 type=8 code=0 id=25337 "
+                  "packets=1 bytes=84 "
+                  "src=8.8.8.8 dst=203.0.113.10 type=0 code=0 id=25337 "
+                  "packets=1 bytes=84 mark=0 zone=0 use=2";
+    ct_rec_t r;
+    CHECK(ct_parse_line(line, &r) == 1, "解析成功");
+    CHECK(r.key.proto == IPPROTO_ICMP, "proto=icmp");
+    CHECK(r.key.sport == 0 && r.key.dport == 0, "ICMP 端口归零");
+    CHECK(r.byt_orig == 84 && r.byt_repl == 84, "字节 84/84");
+}
+
+static void t_unreplied(void)
+{
+    printf("\n[无应答 UDP]\n");
+    char line[] = "ipv4     2 udp      17 30 "
+                  "src=192.168.1.100 dst=1.1.1.1 sport=5000 dport=443 "
+                  "packets=2 bytes=120 [UNREPLIED] mark=0 zone=0 use=1";
+    ct_rec_t r;
+    CHECK(ct_parse_line(line, &r) == 1, "解析成功");
+    char a[64];
+    inet_ntop(AF_INET, r.key.src, a, sizeof(a));
+    CHECK(strcmp(a, "192.168.1.100") == 0, "src=%s", a);
+    CHECK(r.byt_orig == 120, "上行 120");
+    CHECK(r.byt_repl == 0, "下行 0");
+    CHECK(r.have_reply == 0, "无应答标记");
+    CHECK(r.unreplied == 1, "UNREPLIED 识别");
+}
+
+static void t_ipv6(void)
+{
+    printf("\n[ipv6]\n");
+    char line[] = "ipv6     10 tcp      6 56 TIME_WAIT "
+                  "src=2001:db8:1:2:70be:a391:4ff4:e84b "
+                  "dst=2001:db8:3:4:0000:0000:0000:0031 "
+                  "sport=32882 dport=443 packets=17 bytes=7938 "
+                  "src=2001:db8:3:4::31 dst=2001:db8:1:2:70be:a391:4ff4:e84b "
+                  "sport=443 dport=32882 packets=12 bytes=5400 [ASSURED] mark=0 zone=0 use=2";
+    ct_rec_t r;
+    CHECK(ct_parse_line(line, &r) == 1, "解析成功");
+    CHECK(r.key.family == 6, "family=6");
+    CHECK(r.key.sport == 32882 && r.key.dport == 443, "端口 32882->443");
+    CHECK(r.byt_orig == 7938 && r.byt_repl == 5400, "字节 7938/5400");
+}
+
+static void t_mark(void)
+{
+    printf("\n[带 mark 的连接]\n");
+    char line[] = "ipv4     2 tcp      6 7440 ESTABLISHED "
+                  "src=192.168.1.50 dst=104.16.0.1 sport=51000 dport=443 "
+                  "packets=100 bytes=50000 "
+                  "src=104.16.0.1 dst=203.0.113.10 sport=443 dport=51000 "
+                  "packets=200 bytes=900000 [ASSURED] mark=1 zone=0 use=2";
+    ct_rec_t r;
+    CHECK(ct_parse_line(line, &r) == 1, "解析成功");
+    CHECK(r.key.mark == 1, "mark=1 保留");
+    CHECK(r.byt_repl == 900000, "下行 900000");
+}
+
+int main(void)
+{
+    printf("=== ctparse 单元测试 ===\n");
+    t_tcp();
+    t_udp();
+    t_icmp();
+    t_unreplied();
+    t_ipv6();
+    t_mark();
+
+    printf("\n=== 结果: %s (失败 %d) ===\n", fails ? "失败" : "全部通过", fails);
+    return fails ? 1 : 0;
+}

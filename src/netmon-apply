@@ -1,0 +1,84 @@
+#!/bin/sh
+# netmon-apply —— 把 /etc/config/netmon 的设置同步到实际运行的服务。
+#
+# 由 LuCI 设置页保存后调用，也可手动执行；幂等，可重复运行。做三件事：
+#   1) 按 http_port / listen_addr 重写独立 uhttpd 实例的监听地址并 reload；
+#   2) 为 db_path 建好目录（不自动搬历史数据，避免误删或长时间阻塞）；
+#   3) 重启采集进程，让 db_path / retain / interval / loglevel 生效。
+#
+# 只改本包自己的 UCI 段与 uhttpd.netmon 实例，
+# 不动 LuCI 主实例、dnsmasq、homeproxy 和防火墙。
+
+CONF=/etc/config/netmon
+[ -f "$CONF" ] || { echo "netmon: $CONF 不存在" >&2; exit 1; }
+
+get_conf() { uci -q get "$1" 2>/dev/null || echo "$2"; }
+
+PORT=$(get_conf netmon.main.http_port 8090)
+ADDR=$(get_conf netmon.main.listen_addr lan)
+DB=$(get_conf netmon.main.db_path /opt/netmon/data/netmon.db)
+
+# lan / auto：自动取 LAN IP，避免把无鉴权面板绑到 0.0.0.0 暴露到 WAN。
+# 用户显式填了具体地址（含 0.0.0.0）则原样尊重。
+case "$ADDR" in
+    lan|auto|'')
+        ADDR=$(uci -q get network.lan.ipaddr 2>/dev/null || echo 127.0.0.1)
+        ADDR=${ADDR%%/*}
+        [ -n "$ADDR" ] || ADDR=127.0.0.1
+        ;;
+esac
+
+# 端口必须是 1..65535 的纯数字，绝不把非法值写进 uhttpd
+case "$PORT" in
+    ''|*[!0-9]*) echo "netmon: 非法端口 '$PORT'" >&2; exit 1 ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "netmon: 端口越界 '$PORT'" >&2; exit 1
+fi
+
+DBDIR=$(dirname "$DB")
+if ! mkdir -p "$DBDIR"; then
+    echo "netmon: 无法创建数据库目录 $DBDIR" >&2; exit 1
+fi
+
+# 实例不存在就创建；已存在则只覆盖本包负责的字段。
+uci -q get uhttpd.netmon >/dev/null 2>&1 || uci -q set uhttpd.netmon=uhttpd
+uci -q set uhttpd.netmon.home=/www/netmon
+uci -q set uhttpd.netmon.cgi_prefix=/cgi-bin
+uci -q set uhttpd.netmon.index_page=index.html
+uci -q set uhttpd.netmon.max_requests=10
+uci -q set uhttpd.netmon.max_connections=30
+uci -q set uhttpd.netmon.script_timeout=20
+uci -q set uhttpd.netmon.network_timeout=20
+uci -q delete uhttpd.netmon.listen_http 2>/dev/null
+uci -q add_list uhttpd.netmon.listen_http="$ADDR:$PORT"
+uci -q commit uhttpd
+/etc/init.d/uhttpd reload 2>/dev/null || true
+
+# uhttpd reload 是异步的：新端口需要 1~3 秒才完成重新监听。
+# 这里等它就绪再返回，否则用户改完端口立刻访问会撞上 502 Bad Gateway。
+# 用 busybox wget 探测本机新端口；没有 wget 时退化为固定等待。
+if command -v wget >/dev/null 2>&1; then
+    i=0
+    while [ "$i" -lt 5 ]; do
+        wget -q -O /dev/null "http://$ADDR:$PORT/" 2>/dev/null && break
+        sleep 1
+        i=$((i+1))
+    done
+else
+    sleep 3
+fi
+
+# 保证 LuCI 同源路径可用：主实例 home=/www、cgi_prefix=/cgi-bin，
+# 所以 /cgi-bin/netmon-data 必须存在，否则 LuCI 内嵌面板取不到数据。
+if [ -f /www/netmon/cgi-bin/data ]; then
+    mkdir -p /www/cgi-bin
+    cp -f /www/netmon/cgi-bin/data /www/cgi-bin/netmon-data
+    chmod 755 /www/cgi-bin/netmon-data
+fi
+
+# 让新的数据库位置 / 保留期 / 采样间隔生效
+/etc/init.d/netmon restart 2>/dev/null || /etc/init.d/netmon start 2>/dev/null || true
+
+logger -t netmon "applied: port=$PORT addr=$ADDR db=$DB"
+echo "netmon: 已应用（面板 http://$ADDR:$PORT/ ，数据库 $DB）"

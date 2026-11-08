@@ -1,0 +1,109 @@
+#!/bin/sh
+#
+# netmon CGI 接口 - 给前端页面提供 JSON
+#
+# 部署位置：/www/netmon/cgi-bin/data
+#
+# 三个视图：
+#   (默认)        dashboard --since Nd             全局总览
+#   view=client   client --ip X --since Nd         单台设备详情
+#   view=detail   detail --type T --key K --since Nd  通用条目详情
+#                 （T = host / qname / cidr）
+#
+# 安全说明：
+#   1) since 只接受纯数字并限制范围，view 只接受字面量；
+#   2) ip 用 tr -cd 白名单过滤到 [0-9a-fA-F.:]，不执行用户输入；
+#   3) type 只留小写字母；key 由前端 encodeURIComponent 编码，
+#      白名单保留 % 以兼容 URL 编码，且 - 必须放在字符集最后，
+#      否则 tr 会把 ":-%" 当成范围、把 % 一起删掉；
+#   4) 后端再校验一遍并全程走 sqlite3_bind，双保险；
+#   5) 只调用 netmon-report 的只读子命令。
+#
+# uhttpd 通过 CGI 执行本脚本，stdout 就是 HTTP 响应体，
+# 必须先输出 Content-Type 头。
+
+set -eu
+
+QS="${QUERY_STRING:-}"
+
+# 结果缓存：dashboard 要在 24h 窗口上跑十多次聚合查询（约 3 秒），
+# 而前端每 10 秒拉一次。缓存 10 秒既能让命中请求降到毫秒级，
+# 又不会让数据比刷新间隔更旧。按时间范围分文件，切换范围立刻失效。
+# 用「写临时文件 + 原子 mv」，避免并发刷新读到半个 JSON。
+CACHE_DIR=/opt/netmon/data/cache
+CACHE=""
+
+# HTTP 头必须在任何 exit 之前打印：缓存命中分支会提前 exit 0，
+# 若把头放在后面，uhttpd 收不到响应头会直接返回 502 Bad Gateway。
+printf 'Content-Type: application/json\r\n'
+printf 'Cache-Control: no-store\r\n'
+printf 'Access-Control-Allow-Origin: *\r\n'
+printf '\r\n'
+
+# ---- 解析 since（只允许数字，且限制在合理范围） ----
+SINCE_OPT="24h"
+RAW=$(printf '%s' "$QS" | tr '&' '\n' | grep '^since=' | head -1 | cut -d= -f2)
+RAW=$(printf '%s' "$RAW" | tr -cd '0-9')
+if [ -n "$RAW" ] && [ "$RAW" -ge 60 ] && [ "$RAW" -le 2592000 ]; then
+    if [ "$RAW" -ge 86400 ]; then
+        SINCE_OPT="$((RAW / 86400))d"
+    elif [ "$RAW" -ge 3600 ]; then
+        SINCE_OPT="$((RAW / 3600))h"
+    else
+        SINCE_OPT="$((RAW / 60))m"
+    fi
+fi
+
+VIEW=$(printf '%s' "$QS" | tr '&' '\n' | grep '^view=' | head -1 | cut -d= -f2)
+if [ "$VIEW" != "client" ] && [ "$VIEW" != "detail" ]; then
+    mkdir -p "$CACHE_DIR" 2>/dev/null || CACHE_DIR=/tmp
+    # busybox 没有 stat 命令，改用「10 秒窗口编号」做文件名：
+    # 同一窗口内直接命中，跨窗口自动失效，无需读 mtime。
+    WIN=$(( $(date +%s) / 10 ))
+    CACHE="$CACHE_DIR/dash-${SINCE_OPT}-${WIN}.json"
+    if [ -s "$CACHE" ]; then
+        cat "$CACHE"
+        exit 0
+    fi
+    # 只保留当前窗口，避免缓存文件无限累积
+    # 必须写成 if：目录为空时 `&&` 链会返回 1，在 set -e 下
+    # 会让整个 CGI 静默退出（uhttpd 因此返回 502 Bad Gateway）。
+    for OLD in "$CACHE_DIR"/dash-*.json; do
+        if [ -f "$OLD" ] && [ "$OLD" != "$CACHE" ]; then rm -f "$OLD"; fi
+    done
+fi
+IP=$(printf '%s' "$QS" | tr '&' '\n' | grep '^ip=' | head -1 | cut -d= -f2)
+# IPv6 的冒号可能被 encodeURIComponent 编成 %3A；先还原再过滤，
+# 否则 % 被白名单删掉会剩一串 hex，后端会报 "invalid ip"。
+IP=$(printf '%s' "$IP" | sed 's/%3A/:/g; s/%3a/:/g')
+IP=$(printf '%s' "$IP" | tr -cd '0-9a-fA-F.:' | cut -c1-45)
+DTYPE=$(printf '%s' "$QS" | tr '&' '\n' | grep '^type=' | head -1 | cut -d= -f2)
+DTYPE=$(printf '%s' "$DTYPE" | tr -cd 'a-z' | cut -c1-16)
+DKEY=$(printf '%s' "$QS" | tr '&' '\n' | grep '^key=' | head -1 | cut -d= -f2)
+# 键由前端 encodeURIComponent 编码，保留 % 供后端解码
+DKEY=$(printf '%s' "$DKEY" | tr -cd 'A-Za-z0-9._:%-' | cut -c1-240)
+
+REPORT=/usr/bin/netmon-report
+if [ ! -x "$REPORT" ]; then
+    printf '{"error":"netmon-report not found"}\n'
+    exit 0
+fi
+
+# 先接住输出再打印：后端对非法 IP 会自己输出 {"error":...} 并以非零码退出，
+# 若这里再 `|| printf` 就会拼出两段 JSON，前端 JSON.parse 直接失败。
+# 只有输出为空（进程崩了）才补一个错误对象。
+if [ "$VIEW" = "client" ] && [ -n "$IP" ]; then
+    OUT=$("$REPORT" client --since "$SINCE_OPT" --ip "$IP" 2>/dev/null) || true
+elif [ "$VIEW" = "detail" ] && [ -n "$DTYPE" ] && [ -n "$DKEY" ]; then
+    OUT=$("$REPORT" detail --since "$SINCE_OPT" --type "$DTYPE" --key "$DKEY" 2>/dev/null) || true
+else
+    OUT=$("$REPORT" dashboard --since "$SINCE_OPT" 2>/dev/null) || true
+fi
+if [ -z "$OUT" ]; then
+    OUT='{"error":"query failed"}'
+fi
+if [ -n "$CACHE" ] && [ "$OUT" != '{"error":"query failed"}' ]; then
+    printf '%s\n' "$OUT" > "${CACHE}.tmp.$$" 2>/dev/null && \
+        mv "${CACHE}.tmp.$$" "$CACHE" 2>/dev/null || rm -f "${CACHE}.tmp.$$"
+fi
+printf '%s\n' "$OUT"

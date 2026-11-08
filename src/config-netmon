@@ -1,0 +1,25 @@
+config netmon 'main'
+	option enabled '1'
+
+	# 面板端口：独立 uhttpd 实例的监听端口。LuCI 设置页改完会自动生效。
+	option http_port '8090'
+
+	# 监听地址。lan = 自动使用 LAN 地址（推荐，默认安全）；
+	# 也可填具体 IP 或 127.0.0.1。除非明确加过防火墙规则，
+	# 不要填 0.0.0.0 —— 面板没有鉴权，会暴露到 WAN。
+	option listen_addr 'lan'
+
+	# 数据库位置。必须放在持久化存储上（/opt 在 overlay 上，OK；
+	# 大容量机型建议改到外置磁盘）。不要放 /tmp，那是 tmpfs，重启就没了。
+	# 改位置后新数据写入新路径，已有历史数据不会自动迁移。
+	option db_path '/opt/netmon/data/netmon.db'
+
+	# conntrack 采样间隔（秒）。5 秒足够细，且开销极小（实测 11µs/轮）。
+	option interval '5'
+
+	# 明细保留天数。超期的连接与 DNS 明细删除，小时/日聚合长期保留。
+	# 家用路由器建议 3–7 天，避免明细撑满 Flash。
+	option retain '30'
+
+	# 1 = 输出每次采样的调试日志（量大，仅排障时打开）
+	option loglevel '0'

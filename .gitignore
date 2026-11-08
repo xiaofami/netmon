@@ -1,0 +1,26 @@
+# 构建产物
+build/sdk/
+build/apkbuild/
+build/sqlite/
+build/tmp/
+build/shots/
+src/netmon
+src/netmon-report
+src/test_ctparse
+src/test_db
+src/test_dnsmap
+src/test_dnssniff
+src/test_snssniff_bin
+*.o
+
+# 从真实环境抓取的预览数据（含内网拓扑，禁止提交）
+www/preview-live.html
+build/api.json
+build/d2.json
+build/dev-*.json
+build/host-*.json
+build/check.js
+
+# 编辑器与系统
+*.swp
+.DS_Store

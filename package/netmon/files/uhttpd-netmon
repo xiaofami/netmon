@@ -1,0 +1,29 @@
+#!/bin/sh
+# 安装时由 uci-defaults 执行一次：按 /etc/config/netmon 里的端口创建独立 uhttpd 实例。
+# 不改动 LuCI 主实例（80/443），两者互不影响。
+# 之后改端口走 LuCI 设置页（内部调用 /usr/bin/netmon-apply），无需重装本包。
+PORT=$(uci -q get netmon.main.http_port 2>/dev/null || echo 8090)
+ADDR=$(uci -q get netmon.main.listen_addr 2>/dev/null || echo lan)
+case "$PORT" in ''|*[!0-9]*) PORT=8090 ;; esac
+case "$ADDR" in
+    lan|auto|'')
+        ADDR=$(uci -q get network.lan.ipaddr 2>/dev/null || echo 127.0.0.1)
+        ADDR=${ADDR%%/*}
+        [ -n "$ADDR" ] || ADDR=127.0.0.1
+        ;;
+esac
+
+uci -q batch <<UCI
+set uhttpd.netmon=uhttpd
+set uhttpd.netmon.home=/www/netmon
+set uhttpd.netmon.cgi_prefix=/cgi-bin
+set uhttpd.netmon.index_page=index.html
+set uhttpd.netmon.max_requests=10
+set uhttpd.netmon.max_connections=30
+set uhttpd.netmon.script_timeout=20
+set uhttpd.netmon.network_timeout=20
+add_list uhttpd.netmon.listen_http='$ADDR:$PORT'
+commit uhttpd
+UCI
+/etc/init.d/uhttpd reload 2>/dev/null || true
+exit 0
