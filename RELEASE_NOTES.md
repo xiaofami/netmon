@@ -50,8 +50,8 @@ python3 build/build-apk.py --bin-dir build/out --arch <arch_packages> --sdk /pat
 开了 tun 代理（sing-box / homeproxy）之后，同一份用户流量在 conntrack 里会出现两次：
 
 ```
-src=192.168.1.100 dst=<目标>    ← 客户端发出，被 tun 收走
-src=203.0.113.10 dst=<目标>   ← 代理进程从 WAN 重新发出
+src=<客户端>     dst=<目标>   ← 客户端发出，被 tun 收走
+src=<本机 WAN 地址> dst=<目标>   ← 代理进程从 WAN 重新发出
 ```
 
 两条的字节数几乎相同。旧版只过滤「同网段互访」，没排除本机自身地址，于是：
