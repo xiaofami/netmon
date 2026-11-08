@@ -29,3 +29,9 @@ build/check.js
 build/ci/
 build/out/
 sdk/
+
+# 本地打包输出
+dist/
+
+# 开发工具抓取的真实数据（含内网拓扑）
+tools/*.json
