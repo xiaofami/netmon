@@ -24,3 +24,8 @@ build/check.js
 # 编辑器与系统
 *.swp
 .DS_Store
+
+# CI / 交叉编译中间产物
+build/ci/
+build/out/
+sdk/

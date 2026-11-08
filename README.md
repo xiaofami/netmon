@@ -2,6 +2,15 @@
 
 **OpenWrt / ImmortalWrt 上的被动网络监控 —— 不碰转发路径，只看，不改。**
 
+<p>
+<a href="https://tccmu.com/netmon/demo/"><img src="https://img.shields.io/badge/%E2%96%B6_%E5%9C%A8%E7%BA%BF%E6%BC%94%E7%A4%BA-%E7%82%B9%E8%BF%99%E9%87%8C%E7%9B%B4%E6%8E%A5%E7%9C%8B-2f7de1?style=for-the-badge" alt="在线演示" height="42"></a>
+<a href="https://github.com/xiaofami/netmon/actions/workflows/build.yml"><img src="https://github.com/xiaofami/netmon/actions/workflows/build.yml/badge.svg" alt="构建状态" height="42"></a>
+<a href="https://github.com/xiaofami/netmon/releases"><img src="https://img.shields.io/github/v/release/xiaofami/netmon?include_prereleases&sort=semver" alt="最新版本" height="42"></a>
+</p>
+
+> **https://tccmu.com/netmon/demo/** ← 完整交互式面板，不用装路由、不用连设备，
+> 点开就能翻榜单、下钻设备、切皮肤。数据全部脱敏。
+
 一台路由器就是全家的网络出口，但绝大多数路由系统只会告诉你「现在跑多少兆」。
 netmon 想回答的是更难的那类问题：
 
@@ -12,8 +21,8 @@ netmon 想回答的是更难的那类问题：
 
 ![总览](screenshots/overview.png)
 
-> 截图与 [在线演示](https://tccmu.com/netmon/demo/) 中的数据全部经过脱敏：
-> 设备名、MAC、内网地址、域名都是生成的示例值，不对应任何真实环境。
+> 截图取自上面那个演示页，两者数据同源：设备名、MAC、内网地址、域名
+> 都是生成的示例值，不对应任何真实环境。
 
 ---
 
@@ -92,17 +101,19 @@ netmon 想回答的是更难的那类问题：
 
 ## 安装
 
-### 方式一：apk 包（推荐，x86_64）
+### 方式一：apk 包（推荐）
 
-从 [Releases](https://github.com/xiaofami/netmon/releases) 下载两个文件：
+从 [Releases](https://github.com/xiaofami/netmon/releases) 下载对应架构的包。
+每个架构一个 `netmon-*.apk`，`luci-app-netmon-*.apk` 所有架构通用：
 
-```
-netmon-1.0.0-r2-x86_64.apk            采集 + 报表 + Web
-luci-app-netmon-1.0.0-r2-noarch.apk   LuCI 菜单与设置页
-```
+| 架构 | 适用设备 |
+|---|---|
+| `x86_64` | x86 软路由、虚拟机（PVE / ESXi / Hyper-V） |
+| `aarch64_generic` | 通用 ARMv8（armsr/armv8：树莓派、多数 ARM 开发板） |
+| `aarch64_cortex-a53` | MT7981 / MT7986 系列 WiFi6 路由器（mediatek/filogic） |
 
 ```sh
-apk add --allow-untrusted ./netmon-1.0.0-r2-x86_64.apk ./luci-app-netmon-1.0.0-r2-noarch.apk
+apk add --allow-untrusted ./netmon-*-<架构>.apk ./luci-app-netmon-*.apk
 ```
 
 装完即启动，面板在 **`http://<路由器 LAN IP>:8090/`**，
@@ -113,25 +124,54 @@ OpenWrt 24.10 及更早用 opkg，需要自己编译（见下）。
 SQLite 静态链接进二进制，**不需要** `libsqlite3-0`；`homeproxy` 是可选增强，
 没装时拦截归因自动降级，其余功能不受影响。
 
-### 方式二：从源码编译
+> 上面三个架构由 GitHub Actions 在云端编出来（见下面的「云端构建」）。
+> 你的设备不在表里？用源码编，过程同样不需要路由器在线。
+
+### 方式二：自己编 apk（任意架构）
+
+不需要路由器在线，也不需要 OpenWrt 的完整构建树 —— 只要对应 target 的 SDK。
+拿个别的架构举例（比如 MT7621）：
 
 ```sh
-git clone https://github.com/xiaofami/netmon
-cd netmon
+git clone https://github.com/xiaofami/netmon && cd netmon
 
-# 本机（Linux，调试与跑测试用）
-sh src/get-sqlite.sh        # 下载 SQLite amalgamation 并编成静态库
-cd src && make && make test
+# 1. 下 SDK（去 downloads.immortalwrt.org 找对应 target）
+curl -fLO https://downloads.immortalwrt.org/releases/25.12.2/targets/ramips/mt7621/\
+immortalwrt-sdk-25.12.2-ramips-mt7621_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+mkdir sdk && tar --use-compress-program=unzstd -xf *.tar.zst -C sdk --strip-components=1
 
-# 路由器（在目标机上直接编，最快）
-cd src && make SQLITE_CFLAGS=-I/opt/netmon/include \
-              SQLITE_LIBS="-L/opt/netmon/sqa/sqlite-amalgamation-3500300 -lsqlite3"
-make install
+# 2. 交叉编译出两个二进制（sqlite 会一起编）
+SDK_DIR=$PWD/sdk sh build/cross-build.sh build/out
+
+# 3. 打包。架构名查该 target 的 profiles.json 里的 arch_packages
+python3 build/build-apk.py --bin-dir build/out --arch mipsel_24kc --sdk sdk
+# → dist/netmon-1.0.0-r2-mipsel_24kc.apk
 ```
 
-交叉编译（SDK）：把 `package/netmon` 与 `package/luci-app-netmon` 放进 OpenWrt 源码树的
-`package/` 后按常规流程 `make package/netmon/compile`，详见
-[docs/PACKAGING.md](docs/PACKAGING.md)。
+### 方式三：本机跑测试（不产出 apk）
+
+```sh
+sh src/get-sqlite.sh        # 下载 SQLite amalgamation 并编成本机静态库
+cd src && make && make test # 89 项 C 断言
+cd .. && node build/render-test.js   # 126 项前端断言
+```
+
+### 云端构建
+
+`.github/workflows/build.yml` 干三件事：
+
+1. **测试**：C 单元测试 + 前端渲染测试 + 静态检查 + 演示页脱敏自检，四条都过才继续
+2. **编译**：x86_64 / aarch64_generic / aarch64_cortex-a53 三个架构并行，
+   各自下载对应 SDK（带缓存），交叉编译后打包，产物挂在本轮运行上
+3. **发布**：打 `v*` tag 时自动创建 Release 并附上全部 apk 与 `SHA256SUMS`
+
+想加架构：在 `build.yml` 的 matrix 里加一行，`sdk` 填 SDK 文件名、
+`arch` 填该 target `profiles.json` 里的 `arch_packages`，仅此而已。
+
+交叉编译用的是 `build/cross-build.sh`，它只做一件事 —— 用 SDK 的编译器编出两个
+二进制，再交给同一个 `build-apk.py` 打包。所以**云端打出来的包与本地从路由器
+取二进制的包，结构完全一致**（安装脚本、配置保留、apk-new 清理这些坑都是
+一次次踩出来的，不能在 CI 里另写一份）。
 
 ---
 

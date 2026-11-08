@@ -1,0 +1,57 @@
+# netmon
+
+OpenWrt / ImmortalWrt 上的**被动**网络监控。读 `nf_conntrack` + 旁路嗅探 udp/53，
+不参与转发、不发探测包、不改防火墙 —— 装错了也不会断网。
+
+## 安装包
+
+每个架构一个 `netmon-*.apk`，外加一个所有架构通用的 `luci-app-netmon-*.apk`。
+
+| 文件 | 适用设备 |
+|---|---|
+| `netmon-*-x86_64.apk` | x86 软路由、虚拟机（PVE / ESXi / Hyper-V） |
+| `netmon-*-aarch64_generic.apk` | 通用 ARMv8（armsr/armv8：树莓派、多数 ARM 开发板） |
+| `netmon-*-aarch64_cortex-a53.apk` | MT7981 / MT7986 系列 WiFi6 路由器（mediatek/filogic） |
+| `luci-app-netmon-*.apk` | **全部架构通用**（noarch），提供 LuCI 菜单与设置页 |
+
+```sh
+apk add --allow-untrusted ./netmon-*-<你的架构>.apk ./luci-app-netmon-*.apk
+```
+
+- 包格式是 `apk-tools 3`（ADB v3），对应 **ImmortalWrt 25.x / OpenWrt 24.10+ 已启用 apk 的版本**
+- 运行时依赖只有 `ip-full`、`uhttpd`、`kmod-nf-conntrack`，全部来自官方仓库
+- SQLite 静态链接在二进制里，**不需要** `libsqlite3-0`
+- `homeproxy` 是可选增强：没装时拦截归因自动降级，其它功能照常
+
+装完访问 `http://<路由器 LAN IP>:8090/`；LuCI 里在「状态 → 监控面板」。
+端口、监听地址、数据保留天数、采样间隔都能在设置页改。
+
+## 没覆盖到的架构
+
+CI 只编上面三个。其它架构（ramips/mt7621、ipq40xx、bcm27xx 等）用源码自己编：
+
+```sh
+git clone https://github.com/xiaofami/netmon
+cd netmon
+# 从 https://downloads.immortalwrt.org/releases/ 下对应 target 的 SDK 解开
+SDK_DIR=/path/to/sdk sh build/cross-build.sh build/out
+
+# 架构名查该 target 的 profiles.json 里的 arch_packages
+python3 build/build-apk.py --bin-dir build/out --arch <arch_packages> --sdk /path/to/sdk
+```
+
+整个过程不需要路由器在线，也不需要 OpenWrt 的完整构建树。
+
+## 校验
+
+`SHA256SUMS` 一并附上：
+
+```sh
+sha256sum -c SHA256SUMS
+```
+
+## 链接
+
+- 在线演示（数据已脱敏）：https://tccmu.com/netmon/demo/
+- 源码与文档：https://github.com/xiaofami/netmon
+- 问题反馈：https://github.com/xiaofami/netmon/issues
