@@ -1,0 +1,184 @@
+name: build
+
+# 三档触发：
+#   push / PR  → 跑测试 + 编 3 个架构的 apk，产物挂在本轮运行上（不进 Release）
+#   tag v*     → 额外创建 Release 并把 apk 全部附上
+#   手动       → 同上，方便验证
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write        # tag 触发时创建 Release 需要
+
+env:
+  # 固件版本：SDK 与运行时的 apk 仓库都跟这个走，升级时改这一行
+  FW_VER: "25.12.2"
+
+jobs:
+  # ── 1. 测试 ──────────────────────────────────────────────────────────────
+  # 不需要交叉工具链，先把「代码本身没问题」这件事确认掉，
+  # 后面 3 个架构的编译才值得跑。
+  test:
+    name: 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsqlite3-dev unzip
+
+      - name: C 单元测试
+        run: |
+          cd src
+          make
+          make test
+
+      - name: 前端渲染测试
+        # 126 项断言，用 DOM 桩真跑 index.html 的脚本，数据来自仓库里的
+        # 脱敏 demo.html —— 不需要路由器，也不需要浏览器
+        run: node build/render-test.js
+
+      - name: 前端静态检查
+        run: python3 build/check-web.py
+
+      - name: 演示页脱敏自检
+        # 万一有人把真实数据提交进 www/demo.html，这一步会红
+        run: python3 build/make-demo.py --check
+
+  # ── 2. 各架构 apk ────────────────────────────────────────────────────────
+  apk:
+    name: apk (${{ matrix.arch }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 架构名取自各 target 的 profiles.json 里的 arch_packages，
+          # 写错的话 apk 装不上（apk 会比对架构）
+          - target: x86/64
+            sdk: immortalwrt-sdk-25.12.2-x86-64_gcc-14.3.0_musl.Linux-x86_64
+            arch: x86_64
+            note: 软路由 / 虚拟机
+          - target: armsr/armv8
+            sdk: immortalwrt-sdk-25.12.2-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64
+            arch: aarch64_generic
+            note: 通用 ARMv8（树莓派等）
+          - target: mediatek/filogic
+            sdk: immortalwrt-sdk-25.12.2-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64
+            arch: aarch64_cortex-a53
+            note: MT7981/7986 系列 WiFi6 路由器
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd unzip
+
+      # SDK 解压后接近 1GB，缓一层能省掉每次 2~4 分钟的下载
+      - name: 缓存 SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: sdk
+          key: sdk-${{ matrix.sdk }}
+
+      - name: 下载并解压 SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          URL="https://downloads.immortalwrt.org/releases/${FW_VER}/targets/${{ matrix.target }}/${{ matrix.sdk }}.tar.zst"
+          echo "下载 $URL"
+          curl -fsSL --retry 3 -o sdk.tar.zst "$URL"
+          mkdir -p sdk
+          tar --use-compress-program=unzstd -xf sdk.tar.zst -C sdk --strip-components=1
+          rm -f sdk.tar.zst
+          # 解压出来的符号链接必须完整，否则工具链找不到 crt1.o
+          du -sh sdk
+
+      - name: 交叉编译
+        env:
+          SDK_DIR: ${{ github.workspace }}/sdk
+        run: |
+          sh build/cross-build.sh build/out
+
+      - name: 打包 apk
+        run: |
+          set -e
+          # 打 tag 时包版本跟 tag 走，避免出现「tag v1.0.1 里的包叫 1.0.0-r2」
+          ARGS=""
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            ARGS="--version ${GITHUB_REF_NAME#v}"
+          fi
+          python3 build/build-apk.py \
+            --bin-dir build/out \
+            --arch "${{ matrix.arch }}" \
+            --sdk sdk \
+            --out dist \
+            $ARGS
+
+      - name: 校验包
+        run: |
+          set -e
+          ls -la dist/
+          for f in dist/*.apk; do
+            head -c4 "$f" | grep -q ADBd || { echo "$f 不是 ADB v3 包"; exit 1; }
+            sdk/staging_dir/host/bin/apk adbdump "$f" | head -20
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.arch }}
+          path: dist/*.apk
+          if-no-files-found: error
+
+  # ── 3. Release（只在打 tag 时）────────────────────────────────────────────
+  release:
+    name: 发布
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: apk-*
+          merge-multiple: true
+
+      - name: 汇总校验和
+        run: |
+          set -e
+          cd artifacts
+          # luci-app-netmon 是 noarch，3 个矩阵任务各产一份，文件名相同；
+          # download-artifact 的 merge-multiple 会互相覆盖（内容一致无所谓），
+          # 这里仍按文件名去重，保证清单里一个文件只出现一次
+          sha256sum *.apk | sort -k2 | awk '!seen[$2]++' > SHA256SUMS
+          cat SHA256SUMS
+          ls -la
+
+      - name: 创建/更新 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            # 有手写的发布说明就用它（安装步骤、架构表都在里面），
+            # 没有再退回根据提交自动生成的列表
+            if [ -f RELEASE_NOTES.md ]; then
+              gh release create "$TAG" --title "netmon ${TAG#v}" --notes-file RELEASE_NOTES.md
+            else
+              gh release create "$TAG" --title "netmon ${TAG#v}" --generate-notes
+            fi
+          fi
+          gh release upload "$TAG" artifacts/*.apk artifacts/SHA256SUMS --clobber
