@@ -35,7 +35,7 @@ ssh-copy-id -i ~/.ssh/id_netmon.pub root@192.168.1.1
 
 `~/.ssh/netmon.conf`：
 ```
-Host r
+Host router
     HostName 192.168.1.1
     User root
     IdentityFile ~/.ssh/id_netmon
@@ -45,7 +45,7 @@ Host r
 
 之后所有命令：
 ```bash
-ssh -F ~/.ssh/netmon.conf r "<命令>"
+ssh -F ~/.ssh/netmon.conf router "<命令>"
 ```
 
 ### 传文件
@@ -53,12 +53,12 @@ ssh -F ~/.ssh/netmon.conf r "<命令>"
 路由器**没有 sftp-server**，`scp` 不可用。用 tar 管道：
 
 ```bash
-tar cf - 文件1 文件2 | ssh -F ~/.ssh/netmon.conf r 'cd /目标目录 && tar xf -'
+tar cf - 文件1 文件2 | ssh -F ~/.ssh/netmon.conf router 'cd /目标目录 && tar xf -'
 ```
 
 ### 注意 `/tmp` 会被重置
 
-每次 SSH 命令执行的 `/tmp` 可能是干净的。临时文件放 `$HOME/netmon-work/` 或项目目录。
+每次 SSH 命令执行的 `/tmp` 可能是干净的。临时文件放自己的主目录或项目目录。
 
 ---
 
@@ -99,26 +99,26 @@ ls -la libsqlite3.a       # 应为 1.3MB 左右
 # 上传源码（从本地项目目录）
 cd /path/to/netmon/src
 tar cf - *.c *.h Makefile init.d-netmon config-netmon \
-  | ssh -F ~/.ssh/netmon.conf r 'cd /opt/netmon/src && tar xf -'
+  | ssh -F ~/.ssh/netmon.conf router 'cd /opt/netmon/src && tar xf -'
 
 # 编译
-ssh -F ~/.ssh/netmon.conf r 'cd /opt/netmon/src && make'
+ssh -F ~/.ssh/netmon.conf router 'cd /opt/netmon/src && make'
 ```
 
 如果 `make` 不可用，手动编译：
 ```bash
 cd /opt/netmon/src
-gcc -O2 -Wall -o netmon \
-    netmon.c probe.c db.c ctsample.c ctparse.c dnsmap.c dnssniff.c \
-    -I/opt/netmon/include \
-    -L/opt/netmon/sqa/sqlite-amalgamation-3500300 \
-    -lsqlite3
+gcc -O2 -Wall -Wextra -o netmon \
+    netmon.c db.c ctsample.c ctparse.c dnsmap.c dnssniff.c hprules.c \
+    -I/opt/netmon/include -L/opt/netmon/sqa/sqlite-amalgamation-3500300 -lsqlite3
 
-gcc -O2 -Wall -Wextra -o netmon-report netmon-report.c \
-    -I/opt/netmon/include \
-    -L/opt/netmon/sqa/sqlite-amalgamation-3500300 \
-    -lsqlite3
+gcc -O2 -Wall -Wextra -o netmon-report \
+    netmon-report.c hprules.c detail.c \
+    -I/opt/netmon/include -L/opt/netmon/sqa/sqlite-amalgamation-3500300 -lsqlite3
 ```
+
+源文件清单以 `src/Makefile` 的 `NETMON_SRC` / `REPORT_SRC` 为准，
+增删文件时两边要一起改。
 
 > **不要加 `-lpthread`** —— musl 已内置线程支持，加了会报
 > `cannot find -lpthread`。
@@ -132,7 +132,7 @@ gcc -O2 -Wall -Wextra -o netmon-report netmon-report.c \
 ## 3. 安装
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r '
+ssh -F ~/.ssh/netmon.conf router '
   mkdir -p /opt/netmon/data
   cp /opt/netmon/src/netmon        /usr/bin/netmon
   cp /opt/netmon/src/netmon-report /usr/bin/netmon-report
@@ -179,15 +179,15 @@ uci commit netmon
 ## 4. 启动
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r '/etc/init.d/netmon enable && /etc/init.d/netmon start'
+ssh -F ~/.ssh/netmon.conf router '/etc/init.d/netmon enable && /etc/init.d/netmon start'
 ```
 
 验证：
 ```bash
-ssh -F ~/.ssh/netmon.conf r '/etc/init.d/netmon status'
+ssh -F ~/.ssh/netmon.conf router '/etc/init.d/netmon status'
 # 期望输出：running
 
-ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | tail -20'
+ssh -F ~/.ssh/netmon.conf router 'logread -e netmon | tail -20'
 ```
 
 正常启动日志：
@@ -215,7 +215,7 @@ dns www.baidu.com        rcode=0 0.7ms answers=4
 # 从本地项目目录
 cd netmon/www
 tar cf - index.html cgi-bin-data \
-  | ssh -F ~/.ssh/netmon.conf r 'cd /www/netmon && tar xf - && \
+  | ssh -F ~/.ssh/netmon.conf router 'cd /www/netmon && tar xf - && \
       mv cgi-bin-data cgi-bin/data && \
       chmod 755 cgi-bin/data && chmod 644 index.html'
 ```
@@ -230,12 +230,12 @@ tar cf - index.html cgi-bin-data \
 
 **先备份**（重要）：
 ```bash
-ssh -F ~/.ssh/netmon.conf r 'cp /etc/config/uhttpd /root/uhttpd.bak'
+ssh -F ~/.ssh/netmon.conf router 'cp /etc/config/uhttpd /root/uhttpd.bak'
 ```
 
 然后加配置：
 ```bash
-ssh -F ~/.ssh/netmon.conf r '
+ssh -F ~/.ssh/netmon.conf router '
 uci set uhttpd.netmon=uhttpd
 uci set uhttpd.netmon.home="/www/netmon"
 uci set uhttpd.netmon.listen_http="192.168.1.1:8090"
@@ -257,7 +257,7 @@ uci commit uhttpd
 ### 5.3 验证
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r '
+ssh -F ~/.ssh/netmon.conf router '
 netstat -tlnp | grep -E "8090|8080"
 curl -s -o /dev/null -w "page=%{http_code}\n" http://192.168.1.1:8090/
 curl -s "http://192.168.1.1:8090/cgi-bin/data?since=86400" | head -c 200'
@@ -308,7 +308,7 @@ netmon-report top --since 24h -j
 ## 7. 卸载 / 回滚
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r '
+ssh -F ~/.ssh/netmon.conf router '
   /etc/init.d/netmon stop
   /etc/init.d/netmon disable
   rm -f /etc/init.d/netmon /etc/config/netmon

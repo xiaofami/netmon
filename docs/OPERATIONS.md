@@ -9,7 +9,7 @@
 ### 每天（或想起来的时候）
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r '/etc/init.d/netmon status; netmon-report status'
+ssh -F ~/.ssh/netmon.conf router '/etc/init.d/netmon status; netmon-report status'
 ```
 
 健康标准：
@@ -20,7 +20,7 @@ ssh -F ~/.ssh/netmon.conf r '/etc/init.d/netmon status; netmon-report status'
 ### 磁盘占用
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r 'du -sh /opt/netmon/data/; df -h /overlay'
+ssh -F ~/.ssh/netmon.conf router 'du -sh /opt/netmon/data/; df -h /overlay'
 ```
 
 正常值：
@@ -33,7 +33,7 @@ ssh -F ~/.ssh/netmon.conf r 'du -sh /opt/netmon/data/; df -h /overlay'
 
 ```bash
 # stat: 是 debug 级，需先设 loglevel=1 并重启（见「日志级别」一节）
-ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep "stat:" | tail -5'
+ssh -F ~/.ssh/netmon.conf router 'logread -e netmon | grep "stat:" | tail -5'
 ```
 
 ```
@@ -50,7 +50,7 @@ stat: 采样 42 次(均 10us) 连接 455 条 | 明细 455 行 ...
 ### 2.1 服务起不来
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r '/etc/init.d/netmon status; logread -e netmon | tail -30'
+ssh -F ~/.ssh/netmon.conf router '/etc/init.d/netmon status; logread -e netmon | tail -30'
 ```
 
 | 症状 | 原因 | 处理 |
@@ -74,7 +74,7 @@ netmon-report status
 
 ```bash
 # 手动验证测速源
-ssh -F ~/.ssh/netmon.conf r '
+ssh -F ~/.ssh/netmon.conf router '
   curl -s -o /dev/null --interface 203.0.113.45 --max-time 12 \
     -w "code=%{http_code} speed=%{speed_download}\n" \
     https://proof.ovh.net/files/1Mb.dat'
@@ -88,7 +88,7 @@ ssh -F ~/.ssh/netmon.conf r '
 **TUN 模式劫持了探测包。** 检查绕过是否生效：
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep 探测绕过'
+ssh -F ~/.ssh/netmon.conf router 'logread -e netmon | grep 探测绕过'
 # 应输出：探测绕过: interface=203.0.113.45
 ```
 
@@ -102,7 +102,7 @@ ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep 探测绕过'
 可能是禁 ping 主机，也可能是目标真的不可达。手动确认：
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r '
+ssh -F ~/.ssh/netmon.conf router '
   ping -c 3 -W 2 <目标IP>
   # 再试 TCP
   curl -s -o /dev/null -m 5 -w "%{http_code}\n" --interface 203.0.113.45 https://<目标IP>/'
@@ -120,7 +120,7 @@ ssh -F ~/.ssh/netmon.conf r '
 正常情况下程序每天自动跑 `db_gc()`。手工触发：
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r '/etc/init.d/netmon restart'
+ssh -F ~/.ssh/netmon.conf router '/etc/init.d/netmon restart'
 # 启动时会跑一次 rollup + gc
 ```
 
@@ -129,7 +129,7 @@ ssh -F ~/.ssh/netmon.conf r '/etc/init.d/netmon restart'
 如果之前用测试库跑过，想清干净：
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r '
+ssh -F ~/.ssh/netmon.conf router '
   /etc/init.d/netmon stop
   mv /opt/netmon/data/netmon.db* /tmp/netmon-backup-$(date +%s)/
   /etc/init.d/netmon start'
@@ -140,7 +140,7 @@ ssh -F ~/.ssh/netmon.conf r '
 ### 3.3 备份
 
 ```bash
-ssh -F ~/.ssh/netmon.conf r 'tar czf - /opt/netmon/data/netmon.db' > netmon-$(date +%F).tar.gz
+ssh -F ~/.ssh/netmon.conf router 'tar czf - /opt/netmon/data/netmon.db' > netmon-$(date +%F).tar.gz
 ```
 
 注意：**要先停服务或让程序 checkpoint**，否则可能拿到不一致的库。
@@ -158,7 +158,7 @@ ssh -F ~/.ssh/netmon.conf r 'tar czf - /opt/netmon/data/netmon.db' > netmon-$(da
 
 排查：
 ```bash
-ssh -F ~/.ssh/netmon.conf r 'ls -la /opt/netmon/data/'
+ssh -F ~/.ssh/netmon.conf router 'ls -la /opt/netmon/data/'
 ```
 
 处理：重启服务会强制 checkpoint。
@@ -244,18 +244,18 @@ netstat -tlnp | grep 8090
 
 ```bash
 # 立即回滚
-ssh -F ~/.ssh/netmon.conf r '
+ssh -F ~/.ssh/netmon.conf router '
   uci delete dhcp.@dnsmasq[0].logqueries
   uci delete dhcp.@dnsmasq[0].logfacility
   uci commit dhcp
   /etc/init.d/dnsmasq restart'
 
 # 验证配置已清干净
-ssh -F ~/.ssh/netmon.conf r 'grep -cE "logqueries|logfacility" /etc/config/dhcp'
+ssh -F ~/.ssh/netmon.conf router 'grep -cE "logqueries|logfacility" /etc/config/dhcp'
 # 必须返回 0
 
 # 验证 DNS 与出网正常
-ssh -F ~/.ssh/netmon.conf r 'nslookup www.baidu.com 127.0.0.1; ping -c 2 223.5.5.5'
+ssh -F ~/.ssh/netmon.conf router 'nslookup www.baidu.com 127.0.0.1; ping -c 2 223.5.5.5'
 ```
 
 ### 教训
@@ -293,13 +293,13 @@ DNS 分流和解析**完全不受影响**。
 
 ```bash
 # 实时
-ssh -F ~/.ssh/netmon.conf r 'logread -f -e netmon'
+ssh -F ~/.ssh/netmon.conf router 'logread -f -e netmon'
 
 # 只看统计（需要 loglevel=1，否则 debug 级不输出，见下）
-ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep "stat:"'
+ssh -F ~/.ssh/netmon.conf router 'logread -e netmon | grep "stat:"'
 
 # 只看错误
-ssh -F ~/.ssh/netmon.conf r 'logread -e netmon | grep "daemon\.err"'
+ssh -F ~/.ssh/netmon.conf router 'logread -e netmon | grep "daemon\.err"'
 ```
 
 ### 日志级别

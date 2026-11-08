@@ -78,71 +78,35 @@ sing-box 进程未受影响。
 
 ---
 
-## 三、代理可达性探测
+## 三、代理可达性探测（已移除）
 
-### 候选怎么选
+早期这里有一套「候选筛选 → 双路径探测 → 给出加规则建议」的机制：
+从解析失败的域名和零回包的目的地里挑候选，分别经直连和代理各探一次，
+再比对结果。**已经整块删掉**，原因有两条：
 
-- `dnsq` 中 24h 内 `rcode IN (2,3,5)` 按域名聚合，只留 `HP_UNRESOLVED`；
-- `conns` 中 `byt_r = 0`（发出去一个字节都没回来）的目的地，排除内网/本机地址；
-- 合并、按观测次数排序、**同一目标 24 小时冷却**、每轮最多 6 个。
+1. 判定不可靠：代理不通时 sing-box 会返回 502 网关错误页，早期把它当成
+   「可达」，凭空生成「建议加代理规则」的结论。改成只认 `2xx~4xx` 才勉强可用，
+   但仍有大量误报。
+2. 违反非侵入定位：探测要主动发出站请求，而本项目的红线是「不发探测包」。
 
-### 双路径探测
+现在只保留**被动**的拦截归因：从 homeproxy 规则快照反查「这个域名为什么被拒」，
+不额外产生任何流量。要判断线路质量请用外部工具。
 
-| 路径 | curl 参数 | 目的 |
-|---|---|---|
-| 直连 | `--interface <WAN_IP>` + `-k` | 绕过 homeproxy TUN，测真实物理线路 |
-| 代理 | `-x http://127.0.0.1:5330` + `-k`，**不加** `--interface` | 测 homeproxy mixed 端口 |
-
-端口取自 `homeproxy.infra.mixed_port`，可用 `--proxy` 覆盖。
-两条路径都请求 `https://<host>/`（IP 字面量用 http），`--range 0-0` 只取首字节，
-单目标超时 6s / 10s。
-
-**可达判定只看 `200 <= code < 500`**。5xx（尤其 502/503/504）是 sing-box 返回的
-网关错误页，说明代理自己也连不上目标；早期用 `code > 0` 判定，把 502 当成
-「代理可达」，凭空生成了错误的加规则建议，审查时已收紧。
-
-### 结论与建议
-
-| verdict | 含义 | 建议 |
-|---|---|---|
-| `need_proxy` | 直连不通、代理可达 | **建议加入 Proxy 规则**（前端高亮） |
-| `both_ok` | 两条路都通 | 暂不需要加规则 |
-| `direct_only` | 仅直连通 | 走代理反而失败，别加 |
-| `both_fail` | 两条路都不通 | 站点下线 / 非 HTTP 服务，加规则没用 |
-
-结果写 `reach(ts_ms, host, reason, attempts, direct_*, proxy_*, verdict, note)`，
-前端按 host 取最新一次，`need_proxy` 排最前。
-
-### 开销与开关
-
-```
-netmon --proxy http://127.0.0.1:5330 \
-       --reach-interval 900 \      # 15 分钟一轮
-       --reach-limit 6             # 每轮最多 6 个；0 = 关闭探测
-```
-
-默认即上述值。所有探测都在 `run_probe()` 之外独立调度，不占采样热路径；
-curl 用参数数组/`strpbrk` 白名单调用，不经过 shell 注入面。
-
----
 
 ## 四、代码结构
 
 | 文件 | 职责 |
 |---|---|
 | `src/hprules.c/.h` | 规则同步、指纹、归因匹配（采集与报表共用同一份实现） |
-| `src/reach.c/.h` | 候选筛选、双路径探测、结论落库 |
-| `src/probe.c` | 新增 `probe_http_proxy()`，与既有 `probe_http()` 共用 curl 构造 |
-| `src/db.c` | 新增 `reach` / `hp_event` 表、`db_add_reach()` / `db_add_hpevent()` / `db_foreach()` |
-| `src/netmon.c` | 30 秒规则指纹轮询、15 分钟探测调度、变更事件落库 |
-| `src/netmon-report.c` | `collect_bad()` 归因聚合；dashboard 输出 `block_stats` / `hp` / `reach` |
+| `src/db.c` | `hp_event` 表（规则变更）、`db_add_hpevent()` / `db_foreach()` |
+| `src/netmon.c` | 30 秒规则指纹轮询、变更事件落库 |
+| `src/netmon-report.c` | `collect_bad()` 归因聚合；dashboard 输出 `block_stats` / `hp` |
 | `www/index.html` | 「拦截与代理」视图 + 全局归因徽章 |
 
 ### 命名约定
 
-- 后端 `HP_*` 为归因枚举，`verdict` 为探测结论，`cls` 为前端归因字段；
-- 数据库 `reach` 表只存观测结果，`hp_event` 只存规则变更，互不混用；
-- 规则模块的对外函数一律 `hprules_` 前缀，探测模块一律 `reach_` 前缀；
+- 后端 `HP_*` 为归因枚举，`cls` 为前端归因字段；
+- 规则模块的对外函数一律 `hprules_` 前缀；
 - 界面文案不用内部术语：说「按小时统计 · 共 25 小时」，不说「25 个小时桶」；
   说「规则版本」，不说「指纹」；说「规则条目」，不说「模式」。
 
@@ -150,13 +114,11 @@ curl 用参数数组/`strpbrk` 白名单调用，不经过 shell 注入面。
 
 ## 五、已知限制
 
-- 设备详情里的流量只统计该设备 **IPv4** 地址发起的连接；IPv6 源地址不归属到 IPv4 设备。
+- 设备详情里的流量按源地址归属：同一台设备的 IPv4 与 IPv6 会算成两个条目，面板上靠设备名归并展示，底层不合并。
 - `decompile` 需要 `sing-box` 在 PATH 且 `cache.db` 可读；若规则集缓存缺失，
   保留上一次成功加载的匹配表，并用 `rcode=5` 兜底拦截判定，不会整页报错。
 - Go 正则与 POSIX ERE 不完全兼容（如 `(?:...)`），`regcomp` 失败的模式会跳过；
   这类规则仍可通过同规则集里的域名后缀命中。
-- 代理探测是 HTTP(S) 层判定，非 HTTP 协议（游戏、PT、自定义 TCP）会得 `both_fail`，
-  不代表一定不可达。
 - 规则集远程 URL 在该线路上 GitHub 不可达，因此**不依赖在线下载**；
   sing-box 自己更新 cache.db 后，netmon 会自动跟着反编译，无需人工干预。
 
@@ -175,10 +137,9 @@ netmon-report dashboard --since 24h | python3 -m json.tool | less
 ls -la /opt/netmon/data/rs-*.json
 sing-box rule-set decompile /tmp/ads.srs -o /tmp/ads.json
 
-# 探测结果
-python3 -c "import sqlite3;print(*sqlite3.connect('/opt/netmon/data/netmon.db').execute('SELECT host,verdict,direct_code,proxy_code FROM reach ORDER BY ts_ms DESC LIMIT 10'),sep='\n')"
-
-# 手动验证双路径
-curl -o /dev/null -w '%{http_code}\n' --max-time 6 --interface <WAN_IP> -k https://<host>/
-curl -o /dev/null -w '%{http_code}\n' --max-time 10 -x http://127.0.0.1:5330 -k https://<host>/
+# 某个域名被判成什么（拒 / 通 / 未命中规则）
+netmon-report detail --type qname --key <域名> --since 24h
 ```
+
+排「域名被拦了但不知道被谁拦的」时，看 dashboard 里 `hp` 段的规则快照，
+比对着域名和 reject 规则的匹配模式找。

@@ -37,6 +37,14 @@ RULES = [
     (r"\bDESKTOP-[A-Z0-9]{5,}\b", "Windows 默认主机名", False),
     (r"\b(?:OPPO|NOVA|MIX|GEN8|UGOS|WTA|ILOCZ)-?[A-Z0-9]{2,}\b", "疑似厂商型号", False),
     (r"\b[A-Za-z][A-Za-z0-9]*-mibt[A-Z0-9]{4}\b", "小米设备后缀", False),
+
+    # 个人环境痕迹：家目录里自建的临时目录、自命名密钥
+    # （文档里应该写 ~/.ssh/config 这种通用路径）
+    (r"~/[a-z0-9]{2,12}/(?:netmon.conf|id_\w+)", "个人自建 SSH 目录/密钥名", False),
+    (r"\$HOME/[a-z0-9]{2,12}/netmon.conf", "个人自建 SSH 配置路径", False),
+
+    # 固网/移动的真实 IPv6 前缀：2409 中国移动、2408 联通、240e 电信
+    (r"\b240[89e]:[0-9a-f]{1,4}:", "真实运营商 IPv6 前缀", False),
 ]
 
 # 整文件豁免：本检查器自己列了这些正则
