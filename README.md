@@ -236,13 +236,35 @@ config netmon 'main'
     option db_path     '/opt/netmon/data/netmon.db'
     option retain      '30'                         # 明细保留天数
     option interval    '5'                          # conntrack 采样间隔（秒）
-    option loglevel    '0'
+    option loglevel    '0'                          # 1 = 输出 debug 级日志（等价 -v）
 ```
 
 改完执行 `/usr/bin/netmon-apply` 生效（LuCI 保存时会自动调用）。这个脚本是幂等的：
 校验端口 → 建目录 → 重写 `uhttpd.netmon` 实例 → reload → 重启采集。
 
 **面板没有鉴权**，`listen_addr` 不要设成 `0.0.0.0`，除非你在防火墙上另做了限制。
+
+### 日志
+
+日志走 syslog（`LOG_DAEMON`），按严重程度分级，`logread` 里能直接看出正常信息
+和真故障：
+
+```sh
+logread -e netmon            # 全部
+logread -e netmon -l err     # 只看故障
+```
+
+| 级别 | 内容 |
+|---|---|
+| `daemon.info` | 启停、本地网段识别、规则同步 |
+| `daemon.warning` | 非致命降级（嗅探起不来、homeproxy 没装） |
+| `daemon.err` | 真故障（库打不开、建表失败、刷盘失败） |
+| `daemon.debug` | 每秒采样明细与每分钟心跳，**需要 `loglevel 1` 或 `-v`** |
+
+心跳（`stat: 采样 N 次…`）默认不出，因为它每分钟一条，一天 1440 条会把 logd
+那点环形缓冲里别的服务的日志挤掉。真要观察时把 `loglevel` 设成 1。
+
+前台手跑（`netmon -d /tmp/x.db` 在终端里）时日志同时打到屏幕，方便调试。
 
 ### 命令行
 
