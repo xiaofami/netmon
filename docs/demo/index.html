@@ -355,6 +355,28 @@ a{color:inherit;text-decoration:none}
 .tblrow{border-top:1px solid var(--line);padding-top:9px;padding-bottom:9px;min-height:42px;font-size:12px;transition:background .13s}
 .tblrow:hover{background:var(--surface2)}
 .g-log2{grid-template-columns:92px minmax(0,1.2fr) minmax(0,1.4fr) 52px 82px 64px 60px}
+/* 查询日志：带「DNS 服务器」列（需求 B）。窄屏由 labelizeRows 自动带标签 */
+.g-qlog{grid-template-columns:88px minmax(0,1.05fr) minmax(0,1.25fr) 46px 76px minmax(0,1.1fr) 62px minmax(0,.95fr)}
+/*
+ * 最近这批查询全走同一台 DNS 服务器时（局域网默认就这样），
+ * 「DNS 服务器」这一列每行都是同一个值，纯占地方 —— 由 renderQueries()
+ * 给视图加 .no-srv 把它连同表头一起收掉。出现第二台时自动恢复。
+ */
+#v-queries.no-srv .g-qlog{grid-template-columns:88px minmax(0,1.05fr) minmax(0,1.45fr) 46px 76px 62px minmax(0,.95fr)}
+#v-queries.no-srv .g-qlog .c-srv{display:none}
+/* DNS 解析视图：服务器榜 */
+.g-srv{grid-template-columns:minmax(0,1.8fr) 82px 64px 78px 62px}
+.tag{display:inline-block;font:500 10px var(--mono);padding:1px 5px;border-radius:4px;
+     background:var(--surface3);color:var(--fg2);margin-left:5px;white-space:nowrap}
+.tag.v6{background:rgba(46,196,166,.14);color:var(--teal)}
+.subnote{font-size:10.5px;color:var(--fg3);margin-top:2px;white-space:nowrap;
+         overflow:hidden;text-overflow:ellipsis}
+.guide{display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:12px 16px}
+.guide .step{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--fg2)}
+.guide .n{width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;
+          display:flex;align-items:center;justify-content:center;font:600 11px var(--mono)}
+.alert-row{cursor:default}
+.alert-row[data-alertgo]{cursor:pointer}
 .g-reach{grid-template-columns:minmax(0,1.4fr) 84px 62px 62px 112px 92px}
 .g-traffic{grid-template-columns:minmax(0,1.4fr) 88px 88px 88px minmax(0,1fr)}
 .g-host2{grid-template-columns:minmax(0,1fr) 104px 84px}
@@ -442,6 +464,11 @@ footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-f
 @media (max-width:1250px){
   .grid2{grid-template-columns:1fr}
   .g-log2{grid-template-columns:84px minmax(0,1fr) minmax(0,1.1fr) 46px 74px 58px 54px}
+  .g-qlog{grid-template-columns:80px minmax(0,1fr) minmax(0,1.15fr) 42px 68px minmax(0,.95fr) 68px 56px 78px}
+  .g-qlog .c-ans{display:none}
+  /* 窄屏本来就不显示应答列，收掉服务器列后只剩 6 列 */
+  #v-queries.no-srv .g-qlog{grid-template-columns:80px minmax(0,1fr) minmax(0,1.3fr) 42px 68px 68px}
+  .g-srv{grid-template-columns:minmax(0,1.2fr) 62px 68px 66px 54px 92px}
   .g-d2conn{grid-template-columns:88px minmax(0,1fr) minmax(0,1.1fr) 46px 56px 62px 62px}
   .g-reach{grid-template-columns:minmax(0,1.2fr) 76px 56px 56px 100px 84px}
   .g-log{grid-template-columns:74px minmax(0,1fr) minmax(0,1.2fr) 48px 72px}
@@ -512,9 +539,11 @@ footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-f
   .rows .row>div.devc{display:flex;align-items:center}
   .rows .row>div.devc::before{content:none}
   .rows .row>div.cellbar{display:flex}
-  .g-top,.g-cidr,.g-host,.g-probe,.g-dns,.g-traf,.g-log,.g-log2,
+  .g-top,.g-cidr,.g-host,.g-probe,.g-dns,.g-traf,.g-log,.g-log2,.g-qlog,.g-srv,
   .g-devlist,.g-reach,.g-traffic,.g-host2,.g-app,.g-watch,.g-tel{
       grid-template-columns:1fr 1fr}
+  /* 卡片模式下不再隐藏任何列，服务器 / TTL / 应答 IP 全部可见 */
+  .g-qlog .c-ans{display:block !important}
   .empty{padding:22px 12px}
 }
 
@@ -542,6 +571,7 @@ footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-f
     <div class="nav-cap">分析</div>
     <div class="nav-item" data-nav="blocks" id="nav-blocks"></div>
     <div class="nav-item" data-nav="traffic" id="nav-traffic"></div>
+    <div class="nav-item" data-nav="dns" id="nav-dns"></div>
     <div class="nav-item" data-nav="queries" id="nav-queries"></div>
     <div class="nav-item" data-nav="domains" id="nav-domains"></div>
     <div class="nav-cap">系统</div>
@@ -596,6 +626,7 @@ footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-f
     <!-- ---------- 总览 ---------- -->
     <section class="view on" id="v-overview">
       <div class="alert-strip" id="alert-strip"></div>
+      <div class="panel guide" id="ov-guide" style="display:none"></div>
       <div class="notecard" id="digest" style="margin-bottom:14px"></div>
       <div class="kpis" id="kpi-grid"></div>
       <div class="grid2 grid-wrap">
@@ -729,7 +760,7 @@ footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-f
         </div>
       </div>
       <div class="panel">
-        <div class="panel-h"><div class="panel-t" id="t-detail-traffic"></div><span class="panel-sub">仅统计 IPv4 发起的连接</span></div>
+        <div class="panel-h"><div class="panel-t" id="t-detail-traffic"></div><span class="panel-sub">IPv4 + IPv6 · 按 LAN 侧地址归属</span></div>
         <div class="panel-b"><div class="rows"><div class="rhead g-traf"><div>目的地</div><div class="num">连接</div><div class="num c-out">上行</div><div class="num">下行</div></div><div id="detail-traffic"></div></div></div>
         <div class="pager" id="pg-traffic"></div>
       </div>
@@ -922,6 +953,28 @@ footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-f
     </section>
 
 
+    <!-- ---------- DNS 解析：谁在解析 / 协议栈 ---------- -->
+    <section class="view" id="v-dns">
+      <div class="kpis" id="dns-kpi"></div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-dns-srv"></div>
+          <span class="panel-sub" id="dns-srv-sub">—</span></div>
+        <div class="panel-b"><div class="rows">
+          <div class="rhead g-srv"><div>DNS 服务器</div><div class="num">查询</div><div class="num">占比</div><div class="num">均耗时</div><div class="num">协议</div></div>
+          <div id="dns-servers"></div>
+        </div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t" id="t-dns-stack"></div>
+          <span class="panel-sub">IPv4 / IPv6 分栈</span></div>
+        <div class="panel-b"><div class="rows">
+          <div class="rhead g-traf"><div>协议栈</div><div class="num">连接</div><div class="num">上行</div><div class="num">下行</div></div>
+          <div id="dns-stack"></div>
+        </div></div>
+      </div>
+      <div class="notecard" id="dns-note"></div>
+    </section>
+
     <!-- ---------- 查询日志 ---------- -->
     <section class="view" id="v-queries">
       <div class="toolbar">
@@ -935,10 +988,14 @@ footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-f
           <button data-r="all" class="on">全部</button><button data-r="0">正常</button>
           <button data-r="3">NXDOMAIN</button><button data-r="5">REFUSED</button>
         </div>
+        <div class="segmented" id="retry-box" title="mail.example.com.lan 这类：原域名失败后客户端补上搜索域又问一次，和原查询是同一件事">
+          <button data-x="0" class="on">不含重试</button><button data-x="1">含重试</button>
+        </div>
+        <select class="sel" id="srv-box" title="按 DNS 服务器筛选"></select>
         <span class="count" id="queries-count">—</span>
       </div>
       <div class="panel"><div class="panel-b"><div class="rows">
-        <div class="rhead g-log2"><div>时间</div><div>客户端</div><div>域名</div><div>类型</div><div>状态</div><div class="num c-ms">耗时</div><div class="num c-ans">应答</div></div>
+        <div class="rhead g-qlog"><div>时间</div><div>客户端</div><div>域名</div><div>类型</div><div>状态</div><div class="c-srv">DNS 服务器</div><div class="num c-ms">耗时</div><div class="num c-ans">应答 IP</div></div>
         <div id="queries-body"></div>
       </div></div><div class="pager" id="pg-queries"></div></div>
       <div class="notecard" id="queries-note"></div>
@@ -999,7 +1056,7 @@ footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-f
         <div class="panel-b pad"><div class="notecard" id="system-cmd"></div></div></div>
     </section>
 
-    <footer>netmon · 被动旁路采集 · 页面版本 2026-11-08d · <span id="last-update">—</span></footer>
+    <footer>netmon · 被动旁路采集 · 面板 v1.1.0 · <span id="last-update">—</span></footer>
   </main>
 </div>
 
@@ -1097,11 +1154,20 @@ function srcPill(src){ return pill(SRC_LABEL[src]||'未知',src>=3?'na':src===1?
 function rcodePill(r){ var x=RCODE[r]||{t:'R'+r,c:'na'};return pill(x.t,x.c); }
 /* DNS 异常归因：1=广告/规则拦截 2=本地搜索域 3=真实解析失败 */
 var CLS = {1:{t:'广告拦截',c:'bad'}, 2:{t:'本地域',c:'na'}, 3:{t:'解析失败',c:'warn'}};
-function clsPill(cls,rule){
+/* retry=1 的「本地域」是原域名解析失败后补上搜索域又问一次的重复查询
+   （mail.example.com.lan），和真正的内网主机名（nas.lan）不是一回事，
+   单独给个更淡的标签，免得用户以为内网多了个设备在解析 */
+function clsPill(cls,rule,retry){
   var x=CLS[cls]; if(!x) return '';
+  if(cls===2&&retry){
+    return '<span class="pill na" title="'+esc(rule||'原域名解析失败后补上搜索域又问了一次')+'">域重试</span>';
+  }
   return '<span class="pill '+x.c+'"'+(rule?' title="'+esc(rule)+'"':'')+'>'+x.t+'</span>';
 }
 function qname(t){ return QTYPE[t]||('T'+t); }
+function famTag(fam){ return fam===6?'<span class="tag v6">IPv6</span>':'<span class="tag">IPv4</span>'; }
+/* 旧库 answers 列是 "0"/"1" 计数串，不能当 IP 显示 */
+function ansText(a){ var s=String(a==null?'':a); return (!s||s==='0'||s==='1')?'—':s; }
 function kindLabel(k){ return KIND_LABEL[k]||'其他设备'; }
 function empty(t){ return '<div class="empty">'+esc(t||'暂无数据')+'</div>'; }
 function rowsHtml(id,arr,fn){ var e=$(id);if(!e)return;e.innerHTML=arr.length?arr.map(fn).join(''):empty(); }
@@ -1148,8 +1214,15 @@ function globalSearch(q){
   if(!q)return;
   var isIP=/^[0-9a-fA-F.:]+$/.test(q)&&(q.indexOf('.')>=0||q.indexOf(':')>=0);
   if(isIP){
+    /* DNS 服务器 IP 优先去「DNS 解析」页并带上筛选，比跳到没有数据的
+       目标下钻页有用得多；IPv6 客户端地址也走查询日志关键词而不是 host 下钻。 */
+    var srv=(S.data&&S.data.dns_servers||[]).filter(function(x){return x.ip===q;})[0];
+    if(srv){ S.dnsServer=q; location.hash='#/dns'; return; }
     var hit=(S.data&&S.data.devices||[]).filter(function(x){return x.device&&x.device.ip===q;})[0];
-    location.hash=hit?'#/client/'+q:'#/detail/host/'+encodeURIComponent(q);
+    if(hit){ location.hash='#/client/'+q; return; }
+    if(q.indexOf(':')>=0){ S.qq=q.toLowerCase(); location.hash='#/queries';
+      var e=$('search-queries-in'); if(e)e.value=q; return; }
+    location.hash='#/detail/host/'+encodeURIComponent(q);
   } else if(q.indexOf('.')>0){ location.hash='#/detail/qname/'+encodeURIComponent(q); }
   else { S.qq=q.toLowerCase(); location.hash='#/queries';
          var e=$('search-queries-in'); if(e)e.value=q; }
@@ -1206,6 +1279,23 @@ function donut(parts,total,centerLabel){
 }
 
 
+/* 查询日志的筛选条件只在这里算一次，渲染与 CSV 导出共用，
+   保证「导出的就是当前屏幕上看到的那些行」（旧实现导出的是全量）。 */
+function filteredQueries(d){
+  var all=(d&&d.dns_recent)||[];
+  return all.filter(function(r){
+    /* 伴生重试默认不显示：它是原查询失败后的补问，不是一次独立访问 */
+    if(!S.retry&&r.retry)return false;
+    if(S.rcode!=='all'&&String(r.rcode)!==S.rcode)return false;
+    var cl=r.cls||0;
+    if(S.cls==='ok'&&cl>=1)return false;
+    if(S.cls!=='all'&&S.cls!=='ok'&&String(cl)!==S.cls)return false;
+    if(S.dnsServer&&String(r.server||'')!==S.dnsServer)return false;
+    if(!S.qq)return true;
+    return [r.q,r.name,r.ip,r.answers,r.server,r.server_label].join(' ').toLowerCase().indexOf(S.qq)>=0;
+  });
+}
+
 /* ---------------- CSV 导出（纯前端，不额外请求 CGI） ---------------- */
 function csvCell(v){
   var t=String(v==null?'':v);
@@ -1231,9 +1321,15 @@ function exportCurrent(){
               (favHas('ip',q.ip||'')?'[收藏] ':'')+noteGet('ip',q.ip||'')+
               (x.stale_static?' 静态分配未生效，仍用 '+(x.active_ip||''):'')];});
   }else if(v==='queries'){
-    name='查询日志';head=['时间','客户端','域名','类型','状态','耗时ms','应答'];
-    rows=(d.dns_recent||[]).map(function(r){return [tFull(r.ts),r.name||r.ip,r.q,
-      qname(r.qtype),(RCODE[r.rcode]||{}).t||r.rcode,r.ms,r.answers];});
+    name='查询日志';head=['时间','客户端','域名','类型','状态','DNS 服务器','TTL','耗时ms','应答 IP'];
+    rows=filteredQueries(d).map(function(r){return [tFull(r.ts),r.name||r.ip,r.q,
+      qname(r.qtype),(RCODE[r.rcode]||{}).t||r.rcode,r.server||'',
+      r.ttl==null?'':r.ttl,r.ms,ansText(r.answers)];});
+  }else if(v==='dns'){
+    name='DNS 服务器';head=['DNS 服务器','名称','协议族','端口','查询数','占比','均耗时ms'];
+    var tq=Number((d.summary||{}).queries||0);
+    rows=(d.dns_servers||[]).map(function(x){return [x.ip,x.label,x.fam===6?'IPv6':'IPv4',x.port,
+      x.n,tq?(x.n/tq*100).toFixed(1)+'%':'—',x.avg_ms];});
   }else if(v==='domains'){
     name='域名排行';head=['域名','查询数','成功数','NXDOMAIN','REFUSED','均耗时ms'];
     rows=(d.dns||[]).map(function(x){return [x.q,x.n,x.replied,x.nx,x.ref,x.ms];});
@@ -1247,8 +1343,11 @@ function exportCurrent(){
     name='设备详情';head=['域名','次数','异常','均耗时ms'];
     rows=(S.client.top_domains||[]).map(function(x){return [x.q,x.n,(x.nx||0)+(x.ref||0),x.ms];});
   }else{
-    name='总览摘要';head=['指标','值'];var sm=d.summary||{};
+    name='总览摘要';head=['指标','值'];var sm=d.summary||{},st=d.stack||{};
     rows=[['DNS 查询',sm.queries],['活跃客户端',sm.clients],['总流量',hb((sm.bytes_out||0)+(sm.bytes_in||0))],
+          ['IPv6 连接',(st.v6||{}).conns],['IPv6 下行',hb((st.v6||{}).bytes_in)],
+          ['DNS 服务器数',sm.dns_servers_n||(d.dns_servers||[]).length],
+          ['IPv6 查询',(st.v6||{}).queries],
           ['拦截',(d.block_stats||{}).blocked],['数据库',hb(sm.db_bytes)]];
   }
   csvDownload(name,head,rows);
@@ -1259,8 +1358,12 @@ function exportCurrent(){
 var S = {
   since:86400, view:'overview', ip:'', theme:'dark', auto:true,
   data:null, client:null, detail:null, dtype:'', dkey:'', detailFrom:'#/overview',
+  clientFrom:'#/clients', dnsServer:'',
   q:'', filter:'all', layout:'card', sort:'total',
   rcode:'all', cls:'all', csort:'queries', dq:'', qq:'', timer:null,
+  /* retry=1 时显示「域重试」行（mail.example.com.lan 这类）。默认关：
+     它和原始查询是同一件事，开着会把查询日志的本地域行翻一倍。 */
+  retry:0,
   page:{domains:1,traffic:1,recent:1,queries:1,blocked:1,unresolved:1,blockdev:1}
 };
 var NAV = [
@@ -1268,6 +1371,7 @@ var NAV = [
   {k:'clients', t:'客户端',i:'users'},
   {k:'blocks',  t:'拦截记录',i:'shield'},
   {k:'traffic', t:'流量排行',i:'download'},
+  {k:'dns',     t:'DNS 解析',i:'globe'},
   {k:'queries', t:'查询日志',i:'list'},
   {k:'domains', t:'域名排行',i:'globe'},
   {k:'system',  t:'系统信息',i:'settings'}
@@ -1277,6 +1381,7 @@ var TITLES = {
   client:['设备详情','单台设备的 DNS 行为、域名偏好与流量'],
   blocks:['拦截规则','哪些域名被拦截 · 规则变更自动同步 · 真实解析失败'],
   traffic:['流量排行','哪台设备用得多 · 哪些域名和 IP 耗流量 · 下载与上传分开看'],
+  dns:['DNS 解析','查询发往哪台服务器 · 响应快慢 · IPv4 / IPv6 分栈'],
   queries:['查询日志','最近都查了哪些域名'], domains:['域名排行','查询次数与流量分布'],
   system:['系统信息','运行状态、接口统计与数据来源'],
   detail:['条目详情','关联设备、连接时间、分时段流量与 DNS 明细']
@@ -1336,6 +1441,8 @@ function initStatic(){
   setHead('t-rank-dev-up','上传最多的设备','upload');
   setHead('t-rank-host-down','下载最多的目标','download');
   setHead('t-rank-host-up','上传最多的目标','upload');
+  setHead('t-dns-srv','按 DNS 服务器','globe');
+  setHead('t-dns-stack','协议栈分布','activity');
 
   function searchBox(id,ph,key){
     var e=$(id);
@@ -1351,12 +1458,16 @@ function initStatic(){
     '<input type="text" id="gs-in" placeholder="搜索域名 / IP / 设备…">';
   $('gs-in').onkeydown=function(ev){ if(ev.key==='Enter')globalSearch(this.value.trim()); };
   $('csort-box').onchange=function(){ S.csort=this.value;renderView(); };
+  $('srv-box').onchange=function(){
+    S.dnsServer=this.value==='__all'?'':this.value;
+    S.page.queries=1; syncHash(); renderView();
+  };
 
   $('go-clients').onclick=function(){location.hash='#/clients';};
   $('go-domains').onclick=function(){location.hash='#/domains';};
   $('go-queries').onclick=function(){location.hash='#/queries';};
   $('go-blocks').onclick=function(){location.hash='#/blocks';};
-  $('crumb-back').onclick=function(){location.hash='#/clients';};
+  $('crumb-back').onclick=function(){location.hash=S.clientFrom||'#/clients';};
   $('btn-refresh').onclick=function(){load();if(S.view==='client')loadClient();if(S.view==='detail')loadDetail();};
   $('theme-box').value=S.theme;
   $('theme-box').onchange=function(){
@@ -1407,13 +1518,19 @@ function initStatic(){
   Array.prototype.forEach.call(document.querySelectorAll('[data-r]'),function(b){
     b.onclick=function(){
       Array.prototype.forEach.call(document.querySelectorAll('[data-r]'),function(x){x.classList.remove('on');});
-      b.classList.add('on');S.rcode=b.getAttribute('data-r');S.page.queries=1;renderView();
+      b.classList.add('on');S.rcode=b.getAttribute('data-r');S.page.queries=1;syncHash();renderView();
     };
   });
   Array.prototype.forEach.call(document.querySelectorAll('[data-c]'),function(b){
     b.onclick=function(){
       Array.prototype.forEach.call(document.querySelectorAll('[data-c]'),function(x){x.classList.remove('on');});
-      b.classList.add('on');S.cls=b.getAttribute('data-c');S.page.queries=1;renderView();
+      b.classList.add('on');S.cls=b.getAttribute('data-c');S.page.queries=1;syncHash();renderView();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-x]'),function(b){
+    b.onclick=function(){
+      Array.prototype.forEach.call(document.querySelectorAll('[data-x]'),function(x){x.classList.remove('on');});
+      b.classList.add('on');S.retry=Number(b.getAttribute('data-x'));S.page.queries=1;syncHash();renderView();
     };
   });
   Array.prototype.forEach.call(document.querySelectorAll('[data-s]'),function(b){
@@ -1432,13 +1549,23 @@ function initStatic(){
       var onBtn=ev.target.closest?ev.target.closest('#btn-alerts'):null;
       if(!inPop&&!onBtn) ap.classList.remove('on');
     }
+    /* 告警一键定位：带上视图与筛选条件，而不是只给一句文字提示 */
+    var ag=ev.target.closest?ev.target.closest('[data-alertgo]'):null;
+    if(ag){ applyAlertGo(ag.getAttribute('data-alertgo'));
+            ap.classList.remove('on'); return; }
+    /* DNS 服务器榜 → 查询日志并自动筛出这台服务器 */
+    var sg=ev.target.closest?ev.target.closest('[data-srvgo]'):null;
+    if(sg){ var sv=sg.getAttribute('data-srvgo');
+      S.dnsServer=(sv&&sv!=='__all')?sv:'';
+      S.rcode='all';S.cls='all';S.qq='';S.page.queries=1;
+      location.hash='#/queries'; syncHash(); renderView(); return; }
     var st=ev.target.closest?ev.target.closest('[data-star]'):null;
     if(st){ favToggle(st.getAttribute('data-star'),st.getAttribute('data-skey')); return; }
     var am=ev.target.closest?ev.target.closest('#alert-more'):null;
     if(am){ $('alert-pop').classList.add('on'); return; }
     var pg=ev.target.closest?ev.target.closest('[data-pg]'):null;
     if(pg){ var pv=String(pg.getAttribute('data-pg')).split(':');
-      S.page[pv[0]]=parseInt(pv[1],10)||1; renderView(); return; }
+      S.page[pv[0]]=parseInt(pv[1],10)||1; syncHash(); renderView(); return; }
     var t=ev.target.closest?ev.target.closest('[data-goto]'):null;
     if(t){ location.hash='#/client/'+t.getAttribute('data-goto'); return; }
     var n=ev.target.closest?ev.target.closest('[data-navto]'):null;
@@ -1465,7 +1592,7 @@ function initStatic(){
     var ap=$('alert-pop');
     /* 下拉开着时 Esc 只收起它，不误触发「返回客户端」 */
     if(ap&&ap.classList.contains('on')){ ap.classList.remove('on'); return; }
-    if(S.view==='client')location.hash='#/clients';
+    if(S.view==='client')location.hash=S.clientFrom||'#/clients';
   });
   /* 首屏骨架：dashboard 冷启动要几秒（聚合查询），期间 KPI 区不能空白，
      否则在 LuCI 的 iframe 里看起来像加载失败。load() 成功后会被真实内容替换。 */
@@ -1489,21 +1616,76 @@ function resetTimer(){
   if(S.timer)clearInterval(S.timer);
   S.timer=setInterval(function(){
     if(!S.auto)return;
-    load(); if(S.view==='client')loadClient(); if(S.view==='detail')loadDetail();
+    /* 用户正在输入框里打字时跳过本轮，不打断输入与翻页 */
+    try{ var ae=document.activeElement;
+      if(ae&&ae.tagName==='INPUT'&&ae.type==='text')return;
+    }catch(e){}
+    /* 只刷当前视图真正需要的数据：设备详情 / 条目详情复用上一次的
+       dashboard 缓存（renderClient 只用它的 now_ms 与设备目录）。
+       旧实现每 10 秒无条件 fork 三个 CGI，冷查询约 3 秒，纯属浪费。 */
+    if(S.view==='client'){ loadClient(); return; }
+    if(S.view==='detail'){ loadDetail(); return; }
+    load();
   },10000);
+}
+
+/* =====================================================================
+   URL 状态：筛选 / 分页 / 服务器写进 hash，刷新浏览器不丢；
+   用 replaceState 改写，不触发 hashchange，避免与 navigate() 互相递归。
+   ===================================================================== */
+function syncHash(){
+  try{
+    var p=[];
+    if(S.rcode!=='all')p.push('rcode='+encodeURIComponent(S.rcode));
+    if(S.cls!=='all')p.push('cls='+encodeURIComponent(S.cls));
+    if(S.retry)p.push('retry=1');
+    if(S.dnsServer)p.push('server='+encodeURIComponent(S.dnsServer));
+    if(S.page.queries>1)p.push('p='+S.page.queries);
+    var base=(location.hash||'#/queries').split('?')[0];
+    var h=base+(p.length?'?'+p.join('&'):'');
+    if(h!==location.hash) history.replaceState(null,'',h);
+  }catch(e){}
+}
+function parseHashQuery(){
+  var h=String(location.hash||''),i=h.indexOf('?'),kv={};
+  if(i<0)return kv;
+  h.slice(i+1).split('&').forEach(function(p){
+    var j=p.indexOf('=');if(j>0)kv[p.slice(0,j)]=decodeURIComponent(p.slice(j+1));
+  });
+  return kv;
+}
+/* 告警条目点一下就到对应视图并带上筛选，不再只是文字建议 */
+function applyAlertGo(spec){
+  var kv={};String(spec||'').split('&').forEach(function(p){
+    var i=p.indexOf('=');if(i>0)kv[p.slice(0,i)]=decodeURIComponent(p.slice(i+1));});
+  S.rcode=kv.rcode||'all'; S.cls=kv.cls||'all'; S.retry=kv.retry?1:0;
+  S.dnsServer=kv.server||'';
+  S.qq=kv.q||''; S.q=''; S.page.queries=1;
+  location.hash='#/'+(kv.view||'overview');
+  syncHash(); renderView();
 }
 
 /* =====================================================================
    路由
    ===================================================================== */
+var g_lastHash='#/overview';
 function navigate(){
-  var h=location.hash||'#/overview',p=h.replace(/^#\/?/,'').split('/');
+  var h=location.hash||'#/overview';
+  var qi=h.indexOf('?'),p=(qi>=0?h.slice(0,qi):h).replace(/^#\/?/,'').split('/');
   var v=p[0]||'overview';
-  if(['overview','clients','client','blocks','traffic','queries',
+  if(['overview','clients','client','blocks','traffic','dns','queries',
       'domains','system','detail'].indexOf(v)<0)v='overview';
   if(v==='client'&&!p[1]){v='clients';}
   if(v==='detail'&&(!p[1]||!p[2])){v='overview';}
-  var prevIp=S.ip, prevKey=S.dtype+'|'+S.dkey;
+  /* hash 里带筛选参数时回填；没带参数说明是正常导航，保留当前筛选 */
+  var kv=parseHashQuery();
+  if(kv.rcode)S.rcode=kv.rcode;
+  if(kv.cls)S.cls=kv.cls;
+  if(kv.retry)S.retry=1;
+  if(kv.server)S.dnsServer=kv.server;
+  if(kv.p)S.page.queries=parseInt(kv.p,10)||1;
+  var prevIp=S.ip, prevKey=S.dtype+'|'+S.dkey, prevView=S.view;
+  if(v==='client'&&prevView!=='client')S.clientFrom=g_lastHash||'#/clients';
   S.view=v;S.ip=v==='client'?decodeURIComponent(p[1]||''):'';
   if(v==='detail'){ S.dtype=p[1]||''; S.dkey=decodeURIComponent(p[2]||''); }
   Array.prototype.forEach.call(document.querySelectorAll('[data-nav]'),function(e){
@@ -1541,6 +1723,7 @@ function navigate(){
   }
   renderView();
   window.scrollTo(0,0);
+  g_lastHash=h;
 }
 
 /* =====================================================================
@@ -1637,9 +1820,11 @@ function renderView(){
     renderDetailNote(); labelizeRows(); return;
   }
   if(!d)return;
+  renderGuide(d);
   if(S.view==='overview'){ renderOverview(d); renderHeatmap(d); renderDigest(d); }
   else if(S.view==='blocks')renderBlocks(d);
   else if(S.view==='traffic')renderTraffic(d);
+  else if(S.view==='dns')renderDns(d);
   else if(S.view==='clients')renderClients(d);
   else if(S.view==='queries')renderQueries(d);
   else if(S.view==='domains')renderDomains(d);
@@ -1702,26 +1887,26 @@ function renderDetailNote(){
    ===================================================================== */
 function computeAlerts(d){
   var a=[],s=d.summary||{},b=d.block_stats||{},hp=d.hp||{},devs=d.devices||[];
-  if(hp.available===0) a.push({lv:'info',t:'拦截归因未启用',
+  if(hp.available===0) a.push({lv:'info',t:'拦截归因未启用',go:'view=system',
     m:'未检测到 homeproxy。它是可选依赖，设备、流量、DNS 日志与系统状态都不受影响。'});
   var rate=(s.reply_rate||0)*100;
-  if(rate>0&&rate<90) a.push({lv:'bad',t:'DNS 成功率偏低',
-    m:'当前 '+rate.toFixed(1)+'%，可到「查询日志」按应答码筛选定位失败来源。'});
-  if((s.avg_ms||0)>100) a.push({lv:'warn',t:'DNS 响应偏慢',
-    m:'平均 '+Number(s.avg_ms).toFixed(1)+' ms，通常是上游解析或链路变慢。'});
-  if((b.unresolved||0)>5000) a.push({lv:'warn',t:'解析失败偏多',
-    m:nf(b.unresolved)+' 次真实解析失败，去「拦截记录」看具体域名。'});
+  if(rate>0&&rate<90) a.push({lv:'bad',t:'DNS 成功率偏低',go:'view=queries&cls=3',
+    m:'当前 '+rate.toFixed(1)+'%，点击直接看解析失败的查询记录。'});
+  if((s.avg_ms||0)>100) a.push({lv:'warn',t:'DNS 响应偏慢',go:'view=dns',
+    m:'平均 '+Number(s.avg_ms).toFixed(1)+' ms，点击看是哪台 DNS 服务器慢。'});
+  if((b.unresolved||0)>5000) a.push({lv:'warn',t:'解析失败偏多',go:'view=blocks',
+    m:nf(b.unresolved)+' 次真实解析失败，点击看具体域名。'});
   var stale=devs.filter(function(x){return x.stale_static;});
-  if(stale.length) a.push({lv:'warn',t:'静态分配未生效',
+  if(stale.length) a.push({lv:'warn',t:'静态分配未生效',go:'view=clients',
     m:stale.slice(0,3).map(function(x){return (x.device||{}).display||'设备';}).join('、')+
-      ' 仍在使用旧 IP，等设备重连或检查路由器配置。'});
-  if((s.db_bytes||0)>500*1048576) a.push({lv:'info',t:'数据库偏大',
+      ' 仍在使用旧 IP，点击看设备清单。'});
+  if((s.db_bytes||0)>500*1048576) a.push({lv:'info',t:'数据库偏大',go:'view=system',
     m:'当前 '+hb(s.db_bytes)+'，可在「系统信息」里缩短数据保留天数。'});
   var tot=(s.bytes_out||0)+(s.bytes_in||0);
   var big=devs.filter(function(x){return x.bytes_out>1073741824 && tot>0 &&
                                         x.bytes_out/tot>0.5;});
-  if(big.length) a.push({lv:'info',t:'单台设备上传占比较高',
-    m:((big[0].device||{}).display||'某台设备')+' 占全网一半以上上行，可能是云备份或 PT 做种。'});
+  if(big.length) a.push({lv:'info',t:'单台设备上传占比较高',go:'view=traffic',
+    m:((big[0].device||{}).display||'某台设备')+' 占全网一半以上上行，点击看流量排行。'});
   return a;
 }
 function renderAlerts(d){
@@ -1732,8 +1917,10 @@ function renderAlerts(d){
   }
   if(pop) pop.innerHTML='<h4>站内告警 · '+a.length+' 条</h4>'+
     (a.length?a.map(function(x){
-      return '<div class="alert-row">'+pill(x.lv==='bad'?'严重':x.lv==='warn'?'注意':'提示',x.lv)+
-        '<div><b>'+esc(x.t)+'</b><br><span style="color:var(--fg2)">'+esc(x.m)+'</span></div></div>';
+      return '<div class="alert-row" data-alertgo="'+esc(x.go||'view=overview')+'">'+
+        pill(x.lv==='bad'?'严重':x.lv==='warn'?'注意':'提示',x.lv)+
+        '<div><b>'+esc(x.t)+'</b> <span style="color:var(--accent);font-size:10.5px">点击定位 →</span>'+
+        '<br><span style="color:var(--fg2)">'+esc(x.m)+'</span></div></div>';
     }).join(''):'<div class="empty">当前没有需要关注的情况</div>')+
     '<div class="notecard" style="margin-top:9px;font-size:11px;line-height:1.7">'+
     '基于本次加载的数据即时计算，只做提示，不会改动任何配置。</div>';
@@ -1750,6 +1937,77 @@ function renderAlerts(d){
    星期与小时用浏览器本地时区算，服务端不硬编码 UTC+8。
    颜色用 var(--accent) + opacity，自动适配 6 套皮肤。
    ===================================================================== */
+/* 空库引导：新装后没有数据时，不要让用户对着一片「暂无数据」猜 */
+function renderGuide(d){
+  var box=$('ov-guide');if(!box)return;
+  var s=d.summary||{},noData=(Number(s.queries||0)===0&&Number(s.win_conns||0)===0);
+  box.style.display=(noData&&S.view==='overview')?'':'none';
+  if(!noData)return;
+  box.innerHTML='<b style="color:var(--warn);font-size:12px">还没有采到数据</b>'+
+    '<span class="step"><i class="n">1</i>确认服务在跑：<code>/etc/init.d/netmon status</code></span>'+
+    '<span class="step"><i class="n">2</i>确认流量经过本机（主路由，或旁路由做网关 / DNS）</span>'+
+    '<span class="step"><i class="n">3</i><a class="link" data-navto="system">看系统信息与常用命令 →</a></span>';
+}
+
+/* ---------------- DNS 解析：谁在解析 / 协议栈 ---------------- */
+function renderDns(d){
+  var sv=d.dns_servers||[],st=d.stack||{},s=d.summary||{};
+  var totalQ=Number(s.queries||0),v6q=Number((st.v6||{}).queries||0);
+  $('dns-kpi').innerHTML=[
+    kpi({l:'DNS 服务器',v:sv.length,i:'globe',cls:'k-teal',
+         f:'客户端实际查询过的解析服务'}),
+    kpi({l:'DNS 查询',v:nf(totalQ),i:'list',nav:'queries',
+         f:'所选时段 · 点击看逐条明细'}),
+    kpi({l:'平均响应',v:(s.avg_ms!=null?Number(s.avg_ms).toFixed(1):'—'),u:'ms',i:'clock',
+         cls:(s.avg_ms<20?'k-ok':s.avg_ms<100?'k-warn':'k-bad'),
+         f:'成功率 '+pct(s.reply_rate)}),
+    kpi({l:'IPv6 查询占比',v:(totalQ?(v6q/totalQ*100).toFixed(1):'0'),u:'%',i:'globe',
+         f:'AAAA 解析与 IPv6 客户端查询'})
+  ].join('');
+
+  var maxN=sv.length?(sv[0].n||1):1;
+  $('dns-srv-sub').textContent=sv.length
+    ? '共 '+sv.length+' 台 · 点任一行看这台服务器的查询日志'
+    : '所选时段内还没有带服务器信息的记录';
+  rowsHtml('dns-servers',sv,function(x){
+    var share=totalQ?Math.min(100,(x.n||0)/totalQ*100):0;
+    /* 认不出来的地址 label 就是 IP 本身，别在同一行里把地址打两遍 */
+    var lbl=(x.label&&x.label!==x.ip)?x.label:'';
+    var port=(x.port&&x.port!==53)?('端口 '+x.port):'';
+    var sub=lbl?(esc(x.ip)+(port?' · '+port:'')):port;
+    return '<div class="row g-srv" data-srvgo="'+esc(x.ip||'__all')+'">'+
+      '<div style="min-width:0"><div class="key">'+esc(lbl||x.ip)+famTag(x.fam)+'</div>'+
+      (sub?'<div class="addr">'+esc(sub)+'</div>':'')+
+      '<div class="bar g"><i style="width:'+(maxN?((x.n||0)/maxN*100):0).toFixed(1)+'%"></i></div></div>'+
+      '<div class="num">'+nf(x.n)+'</div>'+
+      '<div class="num">'+share.toFixed(1)+'%</div>'+
+      '<div class="num">'+(x.avg_ms==null?'—':Number(x.avg_ms).toFixed(1)+'ms')+'</div>'+
+      '<div class="num">'+famTag(x.fam)+'</div></div>';
+  });
+  if(!sv.length){
+    $('dns-servers').innerHTML='<div class="empty">所选时段没有服务器信息。<br>'+
+      '服务器地址是 1.1.0 起才记录的，更早的历史行没有这一列；'+
+      '把时间范围改小一点，或等新数据写入后再看。</div>';
+  }
+
+  rowsHtml('dns-stack',[{k:'IPv4',o:st.v4||{},f:4},{k:'IPv6',o:st.v6||{},f:6}],function(x){
+    return '<div class="row g-traf"><div class="key">'+esc(x.k)+famTag(x.f)+'</div>'+
+      '<div class="num">'+nf(x.o.conns)+'</div>'+
+      '<div class="num" style="color:var(--up)">'+hb(x.o.bytes_out)+'</div>'+
+      '<div class="num" style="color:var(--down)">'+hb(x.o.bytes_in)+'</div></div>';
+  });
+
+  $('dns-note').innerHTML='<b>服务器这一列是怎么来的：</b>取自 DNS 报文本身 —— '+
+    '查询的目的地址（应答的源地址），也就是客户端真正把查询发给谁，不是猜的。'+
+    '点任意一行可以直接筛出这台服务器的查询日志。<br>'+
+    '<b>为什么没有「缓存命中率」：</b>netmon 是被动旁路，读不到 dnsmasq 内部缓存表；'+
+    '靠「是否观测到上游转发 / 应答时延 / TTL 衰减」去推断，在 DNS 走代理或 DoH/DoT '+
+    '的环境里判定覆盖率极低（实测不足 2%），数字没有参考价值，因此这一版不再提供。'+
+    '要判断解析快不快，看「平均响应」和查询日志里的 TTL、应答 IP 即可。<br>'+
+    '<b>这一页最有用的用法：</b>如果某台设备绕开路由器、直连外部解析器，这里会多出一行；'+
+    '本机解析器（dnsmasq）通常占绝大多数。';
+}
+
 function renderHeatmap(d){
   var grid=$('heat-grid'); if(!grid)return;
   var hm=d.heatmap||[],cells=[],i;
@@ -1969,7 +2227,7 @@ function renderTraffic(d){
       '<div class="num">'+hb(x.bytes)+'</div></div>';
   });
   rowsHtml('traffic-cidr',cidr,function(x){
-    return '<div class="row g-cidr"'+dt('cidr',x.k)+'><div class="key">'+esc(x.k)+'</div>'+
+    return '<div class="row g-cidr"'+dt('cidr',x.k)+'><div class="key">'+esc(x.k)+famTag(x.fam)+'</div>'+
       '<div class="num">'+nf(x.conns)+'</div>'+
       '<div class="num">'+hb(x['in'])+'</div></div>';
   });
@@ -2002,6 +2260,9 @@ function renderTraffic(d){
   $('traffic-note').innerHTML='<b>怎么看：</b>下行是设备收到的字节，上行是设备发出的字节。'+
     '上行明显大于下行通常意味着上传、备份或 PT 做种；下行大则是观看或下载。'+
     '手机 App 普遍共用 CDN 域名，个别目标流量特别大是正常现象。'+
+    '<b>IPv4 与 IPv6 已合并统计</b>：按连接的 LAN 侧地址归属设备，'+
+    'IPv6 目的网段按 /48 聚合（IPv4 按 /24），网段后的徽标标明协议族；'+
+    'AAAA 应答也会写进域名反查表，所以 IPv6 目标能显示域名。'+
     '数据来自只读 conntrack 采样，不含报文内容。';
 }
 
@@ -2035,10 +2296,12 @@ function renderOverview(d){
          v:nf(hpOff?((s.nx||0)+(s.ref||0)):(bs.blocked||0)),i:'shield',cls:'k-bad',nav:'blocks',
          f:hpOff?'未安装 homeproxy，暂不做拦截归因':
            ('占 DNS 异常 '+Number(bs.blocked_pct||0).toFixed(1)+'% · 点击查看详情')}),
-    kpi({l:'平均响应',v:(s.avg_ms!=null?Number(s.avg_ms).toFixed(1):'—'),u:'ms',i:'clock',nav:'queries',
-         cls:(s.avg_ms<20?'k-ok':s.avg_ms<100?'k-warn':'k-bad'),f:'成功率 '+pct(s.reply_rate)+' · 点击查看查询明细'}),
+    kpi({l:'平均响应',v:(s.avg_ms!=null?Number(s.avg_ms).toFixed(1):'—'),u:'ms',i:'clock',nav:'dns',
+         cls:(s.avg_ms<20?'k-ok':s.avg_ms<100?'k-warn':'k-bad'),
+         f:'成功率 '+pct(s.reply_rate)+' · 点击看 DNS 服务器'}),
     kpi({l:'总流量',v:hb((s.bytes_out||0)+(s.bytes_in||0)),i:'download',nav:'traffic',
-         f:'所选时段 · 点击查看流量排行'}),
+         f:'所选时段 · IPv6 '+(function(){var t=(s.bytes_out||0)+(s.bytes_in||0),
+           v=(s.v6_bytes_out||0)+(s.v6_bytes_in||0);return t?(v/t*100).toFixed(1)+'%':'0%';})()}),
     kpi({l:'数据库',v:hb(s.db_bytes),i:'db',nav:'system',f:nf(s.conns||0)+' 条连接 · 点击查看系统信息'})
   ].join('');
 
@@ -2090,13 +2353,15 @@ function renderOverview(d){
       '<div class="num">'+pct(bsv.blocked?x.n/bsv.blocked:0)+'</div></div>';
   });
   /* 最近查询 */
+  var ovVaried=srvVaried(d.dns_recent||[]);
   rowsHtml('ov-recent',(d.dns_recent||[]).slice(0,8),function(r){
     return '<div class="row g-log" style="font-size:11.5px"'+dt('qname',r.q)+'>'+
       '<div class="ip">'+esc(tTime(r.ts))+'</div>'+
       '<div class="nm" style="color:var(--fg2)">'+devLink(r.ip,r.name||r.ip)+'</div>'+
-      '<div class="key" title="'+esc(r.q)+'">'+esc(r.q)+'</div>'+
+      '<div class="key" title="'+esc(r.q)+'">'+esc(r.q)+
+        (ovVaried&&r.server_label?'<div class="subnote">via '+esc(r.server_label)+'</div>':'')+'</div>'+
       '<div class="ip">'+qname(r.qtype)+'</div>'+
-      '<div class="num" title="rcode='+r.rcode+'">'+clsPill(r.cls,r.rule)+'</div>'+
+      '<div class="num" title="rcode='+r.rcode+'">'+clsPill(r.cls,r.rule,r.retry)+'</div>'+
       '<div class="num c-ans" style="color:var(--fg2)">'+(r.ms==null?'—':Number(r.ms).toFixed(1)+'ms')+'</div></div>';
   });
 }
@@ -2249,6 +2514,8 @@ function renderClients(d){
       '<div class="bar"><i style="width:'+p.toFixed(1)+'%"></i></div>'+
       '<div class="dcard-meta">'+pill(kindLabel(v.kind),'plain')+srcPill(v.source)+
         (v.vendor?pill(v.vendor,'plain'):'')+
+        (x.v6_conns?'<span class="pill info" title="IPv6 连接 '+nf(x.v6_conns)+' 条 · ↓'+
+          hb(x.v6_bytes_in)+' ↑'+hb(x.v6_bytes_out)+'">IPv4+IPv6</span>':'')+
         (x.stale_static?'<span class="pill warn" title="设备仍在使用旧地址">静态未生效 · '+esc(x.active_ip||'')+'</span>':'')+
         (v.multi_nic?'<span class="pill info" title="同设备其它网卡：'+esc(v.peers||'')+'">多网卡</span>':'')+
         (x.last_ms?'<span style="color:var(--fg3);font-size:10.5px">'+ago(x.last_ms,now)+'</span>':'')+'</div>'+
@@ -2259,6 +2526,7 @@ function renderClients(d){
     return '<div class="row g-devlist click" data-goto="'+esc(v.ip)+'">'+
       '<div class="devc">'+avatar(v,true)+'<div style="min-width:0"><div class="nm">'+esc(v.display||v.ip)+'</div>'+
         '<div class="sub">'+esc(kindLabel(v.kind))+(v.vendor?' · '+esc(v.vendor):'')+
+          (x.v6_conns?' · IPv4+IPv6':'')+
           (noteGet('ip',v.ip||'')?' · '+esc(noteGet('ip',v.ip||'')):'')+'</div></div></div>'+
       starHtml('ip',v.ip||'')+
       '<div class="ip c-ip">'+esc(v.ip)+'</div>'+
@@ -2283,6 +2551,7 @@ function renderClient(c,d){
         (v.mac?'<span>'+esc(v.mac)+'</span>':'')+
         (v.vendor?'<span>'+esc(v.vendor)+'</span>':'')+'</div>'+
       '<div class="hero-badges">'+pill(kindLabel(v.kind),'info')+srcPill(v.source)+
+        (dv.v6_conns?pill('IPv4+IPv6','ok'):'')+
         (v.name&&v.name!==v.display?pill(v.name,'plain'):'')+
         (dv.stale_static?pill('静态分配未生效','warn'):'')+
         (v.multi_nic?pill('多网卡','info'):'')+'</div>'+
@@ -2304,7 +2573,8 @@ function renderClient(c,d){
     kpi({l:'异常应答',v:nf((s.nx||0)+(s.ref||0)),i:'alert',cls:'k-warn',
          f:'广告拦截 '+nf(bs.blocked||0)+' · 真实失败 '+nf(bs.unresolved||0)}),
     kpi({l:'连接流量',v:hb((s.bytes_in||0)+(s.bytes_out||0)),i:'download',
-         f:nf(s.conns||0)+' 条连接 · ↓'+hb(s.bytes_in)+' ↑'+hb(s.bytes_out)})
+         f:nf(s.conns||0)+' 条连接 · ↓'+hb(s.bytes_in)+' ↑'+hb(s.bytes_out)+
+           ' · IPv6 '+hb((s.v6_bytes_in||0)+(s.v6_bytes_out||0))})
   ].join('');
 
   var tl=c.timeline||[];
@@ -2364,47 +2634,89 @@ function renderClient(c,d){
   });
 
   var rec=(c.recent||[]).filter(function(r){
-    return !S.dq||[r.q,r.answers].join(' ').toLowerCase().indexOf(S.dq)>=0;
+    return !S.dq||[r.q,r.answers,r.server,r.server_label].join(' ').toLowerCase().indexOf(S.dq)>=0;
   });
   S.page.recent=pager('pg-recent',rec.length,S.page.recent,15,'recent');
   $('detail-recent-sub').textContent='最近 '+rec.length+' 条 · 每页 15 条';
+  var dtVaried=srvVaried(c.recent||[]);
   rowsHtml('detail-recent',pageSlice(rec,S.page.recent,15),function(r){
+    var ans=ansText(r.answers);
     return '<div class="row g-log2"'+dt('qname',r.q)+'><div class="ip">'+esc(tShort(r.ts).slice(6))+'</div>'+
-      '<div class="key" title="'+esc(r.q)+'">'+esc(r.q)+'</div>'+
-      '<div class="key" style="color:var(--fg3)" title="'+esc(r.answers)+'">'+esc(r.answers||'—')+'</div>'+
+      '<div class="key" title="'+esc(r.q)+'">'+esc(r.q)+
+        (dtVaried?'<div class="subnote" title="'+esc(r.server||'')+'">via '+esc(r.server_label||r.server||'—')+
+        '</div>':'')+'</div>'+
+      '<div class="key" style="color:var(--fg3)" title="'+esc(ans)+'">'+esc(ans.slice(0,20))+
+        (r.ttl!=null?'<div class="subnote">TTL '+esc(r.ttl)+'s</div>':'')+'</div>'+
       '<div class="ip">'+qname(r.qtype)+'</div>'+
-      '<div title="rcode='+r.rcode+'">'+clsPill(r.cls,r.rule)+'</div>'+
+      '<div title="rcode='+r.rcode+'">'+clsPill(r.cls,r.rule,r.retry)+'</div>'+
       '<div class="num c-ms" style="color:var(--fg2)">'+(r.ms==null?'—':Number(r.ms).toFixed(2)+'ms')+'</div>'+
-      '<div class="num c-ans" style="color:var(--fg3)">'+esc(r.answers&&r.answers.indexOf(',')>=0?r.answers.split(',').length:(r.answers||'0'))+'</div></div>';
+      '<div class="num c-ans" style="color:var(--fg3)">'+
+        esc(r.answer_cnt!=null?r.answer_cnt:(ans==='—'?0:ans.split(',').length))+'</div></div>';
   });
 }
 
 /* ---------------- 查询日志 ---------------- */
+/* 这批查询是否走了不止一台 DNS 服务器。
+   按 label 判重：同一台 dnsmasq 的 IPv4 与 IPv6 地址是两条记录，
+   但 label 都是「本机 dnsmasq」，不能因为双栈就当成两台。 */
+function srvVaried(list){
+  var seen={},n=0;
+  for(var i=0;i<(list||[]).length;i++){
+    var k=list[i].server_label||list[i].server||'';
+    if(!seen[k]){ seen[k]=1; if(++n>1) return true; }
+  }
+  return false;
+}
 function renderQueries(d){
-  var all=d.dns_recent||[],now=d.now_ms||Date.now();
-  var list=all.filter(function(r){
-    if(S.rcode!=='all'&&String(r.rcode)!==S.rcode)return false;
-    var cl=r.cls||0;
-    if(S.cls==='ok'&&cl>=1)return false;
-    if(S.cls!=='all'&&S.cls!=='ok'&&String(cl)!==S.cls)return false;
-    if(!S.qq)return true;
-    return [r.q,r.name,r.ip,r.answers].join(' ').toLowerCase().indexOf(S.qq)>=0;
-  });
+  var all=d.dns_recent||[],list=filteredQueries(d);
+  /*
+   * 局域网默认所有设备都指向本机 dnsmasq，这时「DNS 服务器」列每行同一个值，
+   * 纯占宽度 —— 收掉它。只有真的出现第二台（有设备绕过 dnsmasq、
+   * 或 dnsmasq 自己也向上游查被 any 模式抓到）才显示，那时它才有信息量。
+   */
+  var varied=srvVaried(all);
+  var vq=$('v-queries'), sb=$('srv-box');
+  if(vq){ if(varied) vq.classList.remove('no-srv'); else vq.classList.add('no-srv'); }
+  if(sb) sb.style.display=varied?'':'none';
+  /* 服务器下拉按本次数据重建，保留当前选中项；筛选条件同步进 URL */
+  if(sb){
+    var opts='<option value="__all">服务器：全部</option>';
+    (d.dns_servers||[]).forEach(function(x){
+      opts+='<option value="'+esc(x.ip)+'">'+esc(x.label||x.ip)+'</option>';});
+    if(sb.innerHTML!==opts)sb.innerHTML=opts;
+    sb.value=S.dnsServer||'__all';
+  }
   S.page.queries=pager('pg-queries',list.length,S.page.queries,20,'queries');
   $('queries-count').innerHTML='显示 <b>'+list.length+'</b> / '+all.length+' 条最近记录 · 每页 20 条';
   rowsHtml('queries-body',pageSlice(list,S.page.queries,20),function(r){
-    return '<div class="row g-log2"'+dt('qname',r.q)+'><div class="ip" title="'+esc(tFull(r.ts))+'">'+esc(tTime(r.ts))+'</div>'+
-      '<div class="nm" style="color:var(--fg2)">'+devLink(r.ip,r.name||r.ip)+'</div>'+
+    var ans=ansText(r.answers);
+    return '<div class="row g-qlog"'+dt('qname',r.q)+'>'+
+      '<div class="ip" title="'+esc(tFull(r.ts))+'">'+esc(tTime(r.ts))+'</div>'+
+      '<div class="nm" style="color:var(--fg2)">'+devLink(r.ip,r.name||r.ip)+
+        (r.client_fam===6?'<div class="subnote">IPv6 客户端</div>':'')+'</div>'+
       '<div class="key" title="'+esc(r.q)+'">'+esc(r.q)+'</div>'+
       '<div class="ip">'+qname(r.qtype)+'</div>'+
-      '<div title="rcode='+r.rcode+'">'+clsPill(r.cls,r.rule)+'</div>'+
+      '<div title="rcode='+r.rcode+'">'+clsPill(r.cls,r.rule,r.retry)+'</div>'+
+      '<div class="key c-srv" title="'+esc(r.server||'')+'"><span style="color:var(--fg2)">'+
+        esc(r.server_label||r.server||'—')+'</span>'+
+        (r.server_fam===6?famTag(6):'')+'</div>'+
       '<div class="num c-ms" style="color:var(--fg2)">'+(r.ms==null?'—':Number(r.ms).toFixed(2)+'ms')+'</div>'+
-      '<div class="num c-ans" style="color:var(--fg3)" title="'+esc(r.answers)+'">'+esc((r.answers||'—').slice(0,18))+'</div></div>';
+      '<div class="num c-ans" style="color:var(--fg3)" title="'+esc(ans)+'">'+
+        esc(ans.slice(0,22))+
+        (r.ttl!=null?'<div class="subnote">TTL '+esc(r.ttl)+'s</div>':'')+'</div></div>';
   });
-  $('queries-note').innerHTML='<b>状态说明：</b>正常 = 解析成功；'+
-    '<code>NXDOMAIN</code> 域名不存在（常见于设备探测上线域名、.lan 后缀）；'+
-    '<code>REFUSED</code> 服务端拒答（多为分流策略主动拦截）。'+
-    '接口返回最近 200 条，前端每页 20 条；更长的历史请用 <code>netmon-report dns --since 7d</code>。';
+  $('queries-note').innerHTML='<b>DNS 服务器</b>取自查询报文的目的地址（应答的源地址），'+
+    '即客户端真正把查询发给谁。局域网默认所有设备都指向本机 dnsmasq，'+
+    '这时这一列整屏同一个值、没有信息量，会自动收起来；'+
+    '出现绕过 dnsmasq 直接查外部的设备时才重新显示。整体分布去「DNS 解析」页看。<br>'+
+    '<b>状态说明：</b>正常 = 解析成功；<span class="pill bad">广告拦截</span> 命中 homeproxy 的 reject 规则；'+
+    '<span class="pill na">本地域</span> 查的是 <code>.lan</code> 这类局域网域名；'+
+    '<span class="pill warn">解析失败</span> 才是真的没解析出来。<br>'+
+    '<b>关于「域重试」：</b>客户端解析失败后，resolver 会把 DHCP 下发的搜索域（'+
+    '本机是 <code>lan</code>）补到域名后面再问一次，于是出现 <code>mail.example.com.lan</code> 这种行。'+
+    '它和原始查询是同一件事，所以默认不显示 —— 上面「含重试」可以打开对照。<br>'+
+    '接口返回最近 200 条，每页 20 条；「导出」只导出当前筛选结果。'+
+    '更长的历史用 <code>netmon-report dns --since 7d</code>。';
 }
 
 /* ---------------- 域名排行 ---------------- */
@@ -2412,7 +2724,7 @@ function renderDomains(d){
   var dns=d.dns||[],maxD=dns.length?dns[0].n:1;
   rowsHtml('domains-dns',dns,function(q){
     var rate=q.n?Math.round(q.replied/q.n*100):0,bad=(q.nx||0)+(q.ref||0);
-    return '<div class="row g-dns"'+dt('qname',q.q)+'><div style="min-width:0"><div class="key" title="'+esc(q.q)+'">'+esc(q.q)+' '+clsPill(q.cls,q.rule)+'</div>'+
+    return '<div class="row g-dns"'+dt('qname',q.q)+'><div style="min-width:0"><div class="key" title="'+esc(q.q)+'">'+esc(q.q)+' '+clsPill(q.cls,q.rule,q.retry)+'</div>'+
       '<div class="bar'+(bad?' r':'')+'"><i style="width:'+(q.n/maxD*100).toFixed(1)+'%"></i></div></div>'+
       '<div class="num">'+nf(q.n)+'</div><div class="num">'+pill(rate+'%',rateCls(rate))+'</div>'+
       '<div class="num" style="color:'+(q.ms==null?'var(--fg3)':q.ms<10?'var(--ok)':q.ms<100?'var(--warn)':'var(--bad)')+'">'+
@@ -2460,6 +2772,7 @@ function renderSystem(d){
   });
   $('sys-conn').innerHTML=[
     ['连接总数',nf(si.ct_total)],['TCP',nf(si.ct_tcp)],['UDP',nf(si.ct_udp)],
+    ['IPv4 / IPv6',nf(si.ct_v4||0)+' / '+nf(si.ct_v6||0)],
     ['ESTABLISHED',nf(si.ct_established)],['接收包 / 发送包',
       nf((si.interfaces||[]).reduce(function(a,b){return a+b.rx_pkts;},0))+' / '+
       nf((si.interfaces||[]).reduce(function(a,b){return a+b.tx_pkts;},0))]
@@ -2478,8 +2791,10 @@ function renderSystem(d){
   var kv=[
     ['数据库体积',hb(s.db_bytes)],['连接记录',nf(s.conns)+' 行'],
     ['DNS 记录',nf(s.dns)+' 行'],['已知设备',nf(s.catalog)+' 台'],
+    ['DNS 服务器',nf((d.dns_servers||[]).length)+' 台'],
+    ['IPv6 连接',nf((d.stack&&d.stack.v6||{}).conns||0)+' 条'],
     ['活跃客户端',nf(s.clients)+' 台'],['统计时段','最近 '+Math.round(S.since/3600)+' 小时'],
-    ['页面刷新',S.auto?'每 10 秒':'已暂停'],['服务时间',tFull(d.now_ms||Date.now())]
+    ['页面刷新',S.auto?'每 10 秒（按当前视图）':'已暂停'],['服务时间',tFull(d.now_ms||Date.now())]
   ];
   $('system-db').innerHTML=kv.map(function(x){
     return '<div>'+esc(x[0])+'</div><div>'+esc(x[1])+'</div>';}).join('');
@@ -2488,7 +2803,10 @@ function renderSystem(d){
     '经典 BPF 只放行 <code>udp/53</code>，程序崩溃不影响上网。<br>'+
     '<b>设备身份</b>：静态地址分配 → DHCP 租约 → ARP / IPv6 邻居的 MAC 反查 → OUI 兜底；'+
     '同一 MAC 换 IP 会自动合并，多网卡设备按 MAC 区分。<br>'+
-    '<b>连接流量</b>：只读 <code>/proc/net/nf_conntrack</code>，不改防火墙状态。<br>'+
+    '<b>连接流量</b>：只读 <code>/proc/net/nf_conntrack</code>，不改防火墙状态；'+
+    'IPv4 / IPv6 都按 LAN 侧地址归属设备，入向连接会归一上下行方向。<br>'+
+    '<b>DNS 服务器</b>：取自 DNS 报文的目的 / 源地址，是观测事实；'+
+    '缓存命中率不做推断，被动旁路读不到解析器缓存表。<br>'+
     '<b>系统状态</b>：只读 <code>/proc</code>，不产生额外探测流量。<br>'+
     '<span style="color:var(--fg3)">homeproxy 为可选依赖，未安装时拦截归因自动降级。</span>';
   $('system-cmd').innerHTML=
