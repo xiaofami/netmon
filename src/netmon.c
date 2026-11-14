@@ -246,6 +246,40 @@ static local_net_t g_lnet[MAX_LOCAL_NET];
 static int         g_lnet_n;
 
 /*
+ * IPv6 本机网段前缀表（1.1.0）：16 字节网络 + 前缀长度。
+ * 用于 v6 同网段噪音过滤与方向归一，严格来自 getifaddrs() 的 ifa_netmask，
+ * 不写死任何网段（RA 给 /64、PD 给 /56 都能自适应）。
+ */
+typedef struct { uint8_t net[16]; uint8_t pfx; } local_net6_t;
+static local_net6_t g_lnet6[MAX_LOCAL_NET];
+static int          g_lnet6_n;
+
+/* 统计 16 字节掩码的前导 1 位数（接口掩码总是连续的） */
+static int mask6_prefix(const uint8_t m[16])
+{
+    int pfx = 0;
+    for (int i = 0; i < 16; i++) {
+        if (m[i] == 0xff) { pfx += 8; continue; }
+        uint8_t b = m[i];
+        while (b & 0x80) { pfx++; b <<= 1; }
+        break;
+    }
+    return pfx;
+}
+
+/* ip 是否落在 net/pfx 这个 v6 前缀内（只比较前 pfx 位） */
+static int ip6_in_net(const uint8_t ip[16], const uint8_t net[16], int pfx)
+{
+    int bytes = pfx / 8, bits = pfx % 8;
+    if (bytes && memcmp(ip, net, (size_t)bytes) != 0) return 0;
+    if (bits) {
+        uint8_t m = (uint8_t)(0xff << (8 - bits));
+        if ((ip[bytes] & m) != (net[bytes] & m)) return 0;
+    }
+    return 1;
+}
+
+/*
  * 本机自己所有接口的 IPv4 地址（含 WAN、pppoe、tun、podman 网桥等）。
  *
  * 为什么要单独记：开了 tun 代理（sing-box / homeproxy）之后，同一份用户流量
@@ -276,14 +310,31 @@ static void load_local_nets(void)
     for (p = ifa; p; p = p->ifa_next) {
         if (!p->ifa_addr) continue;
 
-        /* --- IPv6：只收 global，跳过 link-local（fe80 每口一个，无意义）--- */
+        /* --- IPv6：收 global/ULA 地址 + 网段前缀，跳过回环/link-local/组播 --- */
         if (p->ifa_addr->sa_family == AF_INET6) {
             const uint8_t *b = ((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr.s6_addr;
-            if (b[0] == 0xfe && b[1] == 0x80) continue;         /* link-local */
+            /* ::1 回环 */
             int is_lo6 = !memcmp(b, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\1", 16);
             if (is_lo6) continue;
+            /* fe80::/10 link-local */
+            if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) continue;
+            /* ff00::/8 组播 */
+            if (b[0] == 0xff) continue;
+
             if (g_self_v6_n < MAX_SELF_IP)
                 memcpy(g_self_v6[g_self_v6_n++], b, 16);
+
+            /* 把接口地址 + 掩码折算成本机 v6 网段前缀（用于同网段判定/方向归一） */
+            if (!p->ifa_netmask) continue;
+            const uint8_t *m =
+                ((struct sockaddr_in6 *)p->ifa_netmask)->sin6_addr.s6_addr;
+            int pfx = mask6_prefix(m);
+            if (pfx == 0 || pfx >= 128) continue;   /* 跳过 /0 与单主机 /128 */
+            if (g_lnet6_n >= MAX_LOCAL_NET) continue;
+            for (int j = 0; j < 16; j++)
+                g_lnet6[g_lnet6_n].net[j] = b[j] & m[j];
+            g_lnet6[g_lnet6_n].pfx = (uint8_t)pfx;
+            g_lnet6_n++;
             continue;
         }
 
@@ -318,6 +369,12 @@ static void load_local_nets(void)
         int bits = 0;
         for (uint32_t m = g_lnet[i].mask; m; m <<= 1) bits++;
         logi("本地网段 %s/%d（内部互访不计流量）", ip, bits);
+    }
+    for (int i = 0; i < g_lnet6_n; i++) {
+        char ip[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, g_lnet6[i].net, ip, sizeof(ip));
+        /* net 已把主机位清零，inet_ntop 自然输出 2001:db8::/64 这种压缩形式 */
+        logi("本地网段 %s/%d（IPv6 内部互访不计流量）", ip, g_lnet6[i].pfx);
     }
     for (int i = 0; i < g_self_n; i++) {
         char ip[INET_ADDRSTRLEN];
@@ -356,18 +413,39 @@ static int in_same_local_net(const uint8_t *s, const uint8_t *d)
     return 0;
 }
 
+/* 单个 v6 地址是否属于噪音：:: / ::1、fe80::/10 link-local、ff00::/8 组播 */
+static int is_noise_v6_addr(const uint8_t p[16])
+{
+    int lo_or_unspec = 1;
+    for (int i = 0; i < 15; i++) if (p[i]) { lo_or_unspec = 0; break; }
+    if (lo_or_unspec && (p[15] == 0 || p[15] == 1)) return 1;  /* :: / ::1 */
+    if (p[0] == 0xfe && (p[1] & 0xc0) == 0x80) return 1;        /* fe80::/10 */
+    if (p[0] == 0xff) return 1;                                  /* ff00::/8 */
+    return 0;
+}
+
 static int ignore_conn(const ct_key_t *k)
 {
     static const uint8_t V4MAP[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
 
     /*
-     * IPv6 只做一件事：源是本机地址就丢弃（tun 代理导致的重复计量）。
-     * 网段内互访、广播、组播这些 v4 规则不套用到 v6：
-     *   - 运营商给的是 /64，同网段判断等于「全世界的 v6 都算内网」
-     *   - v6 没有广播，组播地址段也不同
+     * IPv6 噪音过滤（1.1.0 补齐，对齐 v4）：
+     *   1) :: / ::1（未指定 / 回环）
+     *   2) fe80::/10 link-local（ND/邻居发现，不该算上网流量）
+     *   3) ff00::/8 组播
+     *   4) 源与目的落在同一个本机 v6 前缀（LAN 内互访不计）
+     *   5) 源是本机任一 v6 地址（tun 代理导致的重复计量）
+     * 前缀严格来自 g_lnet6（getifaddrs 的 ifa_netmask），不写死任何网段。
      */
-    if (k->family == 6)
-        return is_self_ip6(k->src);
+    if (k->family == 6) {
+        const uint8_t *s = k->src, *d = k->dst;
+        if (is_noise_v6_addr(s) || is_noise_v6_addr(d)) return 1;
+        for (int i = 0; i < g_lnet6_n; i++)
+            if (ip6_in_net(s, g_lnet6[i].net, g_lnet6[i].pfx) &&
+                ip6_in_net(d, g_lnet6[i].net, g_lnet6[i].pfx)) return 1;
+        if (is_self_ip6(s)) return 1;
+        return 0;
+    }
 
     if (k->family != 4) return 0;
 
@@ -394,6 +472,32 @@ static int ignore_conn(const ct_key_t *k)
      */
     if (is_self_ip(s)) return 1;
 
+    return 0;
+}
+
+/*
+ * 取 v4 地址真实的 4 字节：ctparse 给的是裸 v4（前 4 字节），
+ * 也可能遇到 v6-mapped（后 4 字节）形态，两种都要兼容。
+ */
+static const uint8_t *v4_real_bytes(const uint8_t ip[16])
+{
+    static const uint8_t V4MAP[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
+    return memcmp(ip, V4MAP, 12) == 0 ? (ip + 12) : ip;
+}
+
+/* 地址是否落在本机任一 LAN 网段：v4 用 g_lnet、v6 用 g_lnet6 */
+static int addr_in_lan(const ct_key_t *k, const uint8_t ip[16])
+{
+    if (k->family == 4) {
+        const uint8_t *p = v4_real_bytes(ip);
+        uint32_t a = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                    ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
+        for (int i = 0; i < g_lnet_n; i++)
+            if ((a & g_lnet[i].mask) == g_lnet[i].net) return 1;
+    } else if (k->family == 6) {
+        for (int i = 0; i < g_lnet6_n; i++)
+            if (ip6_in_net(ip, g_lnet6[i].net, g_lnet6[i].pfx)) return 1;
+    }
     return 0;
 }
 
@@ -428,9 +532,41 @@ static void on_conn_gone(const ct_key_t *k, uint64_t seen_ms,
     const char *host = g_dnsmap ? dnsmap_lookup(g_dnsmap, k->family, k->dst)
                                 : NULL;
 
-    int rc = db_add_conn(g_db, k, seen_ms, last_ms,
-                         pkt_o, byt_o, pkt_r, byt_r,
-                         0, k->zone, k->mark, host);
+    /*
+     * 方向归一（§5.1.3）：LAN 侧是哪一端，就用哪一端做设备归属。
+     *   src 在 LAN  → dir=0、client_ip=src；orig 就是 LAN→WAN 上传，不换。
+     *   dst 在 LAN  → dir=1、client_ip=dst；入站连接的 conntrack orig 是
+     *                 WAN→LAN（下载），把 orig/repl 互换后 byt_o 恒为
+     *                 「LAN 侧上传」、byt_r 恒为「下载」，上下行不颠倒。
+     *   两端都不在 LAN → client_ip=NULL、dir=0，保持旧行为（报表
+     *                 COALESCE(client_ip, src) 退回旧口径）。
+     * client_ip 用 db_ip_str() 格式化成文本；两端都在 LAN 优先按 src 判 0，
+     * 与出向语义一致（这种情况通常已被 ignore_conn 的同网段规则滤掉）。
+     */
+    int dir = 0;
+    const char *client_ip = NULL;
+    char client_ip_buf[INET6_ADDRSTRLEN] = "";
+    int src_lan = addr_in_lan(k, k->src);
+    int dst_lan = addr_in_lan(k, k->dst);
+
+    if (src_lan) {
+        dir = 0;
+        db_ip_str(k->family, k->src, client_ip_buf, sizeof(client_ip_buf));
+        client_ip = client_ip_buf[0] ? client_ip_buf : NULL;
+    } else if (dst_lan) {
+        dir = 1;
+        db_ip_str(k->family, k->dst, client_ip_buf, sizeof(client_ip_buf));
+        client_ip = client_ip_buf[0] ? client_ip_buf : NULL;
+        /* 互换 orig/repl，保证 byt_o/pkt_o 恒为上传 */
+        uint64_t t;
+        t = pkt_o; pkt_o = pkt_r; pkt_r = t;
+        t = byt_o; byt_o = byt_r; byt_r = t;
+    }
+
+    int rc = db_add_conn_ex(g_db, k, seen_ms, last_ms,
+                            pkt_o, byt_o, pkt_r, byt_r,
+                            0, k->zone, k->mark, host,
+                            client_ip, (uint8_t)dir);
     if (rc == 0)
         g_stat.conns_written++;
 }
@@ -517,6 +653,71 @@ static void dns_log_pump(void)
 
 /* ---------------- DNS 被动嗅探 ---------------- */
 
+/* ---- 地址属性判定（仅用于 any 模式的 WAN 侧转发去重）---- */
+
+static int is_self_v4(uint32_t a)
+{
+    for (int i = 0; i < g_self_n; i++)
+        if (g_self_ip[i] == a) return 1;
+    return 0;
+}
+
+/* 事件地址是否为「本机地址」：v4 取 v6-mapped 后 4 字节，v6 原生；含回环 */
+static int is_self_addr(uint8_t fam, const uint8_t ip[16])
+{
+    if (fam == 4) {
+        uint32_t a = ((uint32_t)ip[12] << 24) | ((uint32_t)ip[13] << 16) |
+                    ((uint32_t)ip[14] << 8)  | (uint32_t)ip[15];
+        if (a == 0x7f000001u) return 1;   /* 回环 */
+        return is_self_v4(a);
+    }
+    if (fam == 6) {
+        int lo = 1;
+        for (int i = 0; i < 15; i++) if (ip[i]) { lo = 0; break; }
+        if (lo && ip[15] == 1) return 1;  /* ::1 */
+        return is_self_ip6(ip);
+    }
+    return 0;
+}
+
+/* 按协议族把 16 字节事件地址格式化成文本（v4 取 v6-mapped 后 4 字节） */
+static void format_event_ip(uint8_t fam, const uint8_t ip[16],
+                            char *out, size_t n)
+{
+    if (!out || n == 0) return;
+    out[0] = '\0';
+    if (fam == 4) {
+        if (inet_ntop(AF_INET, ip + 12, out, (socklen_t)n)) return;
+    } else if (fam == 6) {
+        if (inet_ntop(AF_INET6, ip, out, (socklen_t)n)) return;
+    }
+    snprintf(out, n, "?");
+}
+
+/* 首个 A/AAAA 应答 TTL；无应答返回 -1（未知） */
+static int first_answer_ttl(const dns_event_t *e)
+{
+    if (e->n_ans == 0) return -1;
+    return (int)e->ans[0].ttl;
+}
+
+/* 最多 4 个应答地址，逗号拼接，v4/v6 混排（§7 控制写放大） */
+static void build_answer_ips(const dns_event_t *e, char *out, size_t n)
+{
+    if (!n) return;
+    out[0] = '\0';
+    size_t used = 0;
+    int cnt = e->n_ans < 4 ? e->n_ans : 4;
+    char one[INET6_ADDRSTRLEN];
+    for (int i = 0; i < cnt; i++) {
+        format_event_ip(e->ans[i].family, e->ans[i].ip, one, sizeof(one));
+        if (!one[0] || one[0] == '?') continue;
+        int w = snprintf(out + used, n - used, "%s%s", used ? "," : "", one);
+        if (w < 0 || (size_t)w >= n - used) break;
+        used += (size_t)w;
+    }
+}
+
 /*
  * DNS 事件回调：把嗅探到的映射喂给 dnsmap，把查询质量写进 dnsq 表。
  *
@@ -532,76 +733,83 @@ static void on_dns_event(const dns_event_t *e, void *ud)
     uint64_t now = wall_ms();
 
     if (e->is_query) {
-        /*
-         * 查询：写 dnsq 表记录解析质量。
-         * 应答到达时才算得出耗时，所以查询阶段 ms 写 NULL，
-         * 由应答那条记录补上 —— 但为了避免一个名字两条记录，
-         * 这里只在应答时落库（见下面）。
-         */
+        /* 查询阶段不算耗时、不落库（一个名字只写应答那一行）。 */
         g_stat.dns_queries++;
         return;
     }
 
-    /* 应答：有解析结果就更新反查表 */
-    if (e->has_ip && g_dnsmap) {
-        dnsmap_add(g_dnsmap, e->family, e->ip, e->qname, (uint64_t)time(NULL));
-        g_stat.dns_mapped++;
-    }
-
-    /*
-     * 落库：每个应答写一行 dnsq。
-     * 频率约为每秒几次，对写入量无影响（相比 conntrack 的几千条/分钟）。
-     *
-     * 只记 A/AAAA（qtype 1/28），其他记录类型对"解析质量"没意义。
-     */
-    if (e->qtype != 1 && e->qtype != 28) return;
-
-    /* 反查：拿第一个 A 记录的 IP 文本 */
-    char ipbuf[64] = "";
-    if (e->has_ip) {
-        if (e->family == 4)
-            snprintf(ipbuf, sizeof(ipbuf), "%u.%u.%u.%u",
-                     e->ip[12], e->ip[13], e->ip[14], e->ip[15]);
-        else {
-            char t[64];
-            if (inet_ntop(AF_INET6, e->ip, t, sizeof(t)))
-                snprintf(ipbuf, sizeof(ipbuf), "%s", t);
+    /* 应答：遍历 ans[] 全部入 dnsmap —— A 与 AAAA 都映射，
+     * 让 IPv6 目的 IP 也能反查到域名（修复 P4 双栈只取第一条的问题）。 */
+    if (g_dnsmap) {
+        for (uint8_t i = 0; i < e->n_ans; i++) {
+            const dns_answer_t *a = &e->ans[i];
+            dnsmap_add(g_dnsmap, a->family, a->ip, e->qname,
+                       (uint64_t)time(NULL));
+            g_stat.dns_mapped++;
         }
     }
 
+    /*
+     * any 模式会同时抓到「本机解析器 ↔ 上游」的 WAN 侧帧。
+     * 这类应答（client 是本机地址、server 不是本机地址）只是同一条解析的
+     * 转发副本，只更新 dnsmap、不写 dnsq，避免重复计数。
+     */
+    if (is_self_addr(e->client_fam, e->client) &&
+        !is_self_addr(e->server_fam, e->server)) {
+        return;
+    }
+
+    /* 只记 A/AAAA（qtype 1/28），其他记录类型对"解析质量"没意义 */
+    if (e->qtype != 1 && e->qtype != 28) return;
+
+    /* client / server 文本：按各自 fam 用 inet_ntop 格式化
+     * （v4 取 16 字节缓冲的 v6-mapped 后 4 字节）。 */
+    char client_buf[INET6_ADDRSTRLEN] = "";
+    char server_buf[INET6_ADDRSTRLEN] = "";
+    format_event_ip(e->client_fam, e->client, client_buf, sizeof(client_buf));
+    format_event_ip(e->server_fam, e->server, server_buf, sizeof(server_buf));
+
+    /* 应答 IP 列表（最多 4 个，v4/v6 混排） */
+    char answer_ips[256] = "";
+    build_answer_ips(e, answer_ips, sizeof(answer_ips));
+
     db_dnsq_t q;
     memset(&q, 0, sizeof(q));
-    q.ts_ms   = now;
-    q.qname   = e->qname;
-    q.qtype   = e->qtype;
-    q.rcode   = e->rcode;
-    q.ms      = (e->ms >= 0.0) ? e->ms : NAN;
-    q.answers = e->has_ip ? 1 : 0;
-    q.first_ip = ipbuf[0] ? ipbuf : NULL;
+    q.ts_ms       = now;
+    q.qname       = e->qname;
+    q.qtype       = e->qtype;
+    q.rcode       = e->rcode;
+    q.ms          = (e->ms >= 0.0) ? e->ms : NAN;
+    q.answers     = e->n_ans ? 1 : 0;   /* 旧字段：answer_ips 为空时兜底 */
+    q.client_ip   = client_buf[0] ? client_buf : NULL;
+    q.client_fam  = e->client_fam;
+    q.server_ip   = server_buf;
+    q.server_fam  = e->server_fam;
+    q.server_port = e->server_port;
+    q.ttl         = first_answer_ttl(e);   /* -1 = 未知，db 层 <=0 写 NULL */
+    q.answer_cnt  = e->n_ans;
+    q.answer_ips  = answer_ips[0] ? answer_ips : NULL;
 
     /*
-     * 客户端 IP：DNS 报文里唯一能拿到的"是谁发的"信息。
-     * client_ip 是网络字节序的 IPv4，收到 0 表示没取到（IPv6 查询或本机）。
+     * 归因：这条查询到底是"被自己拦了"、"本地搜索域的伴生重试"，
+     * 还是"真的解析失败"。
+     *
+     * 为什么必须在写库这一刻算，而不是报表时现算：
+     *   规则集会变。事后用今天的规则去解释昨天的查询，等于改写历史 ——
+     *   用户排查"上周为什么打不开这个站"时，看到的必须是当时的判断。
+     *
+     * 代价很小：hprules_match() 是几百条后缀比对的线性扫描，单条查询
+     * 十几微秒；实测 2 小时 1.3 万条查询，占用可以忽略。
      */
-    char ipcbuf[24] = "";
-    if (e->client_ip) {
-        uint32_t h = ntohl(e->client_ip);
-        snprintf(ipcbuf, sizeof(ipcbuf), "%u.%u.%u.%u",
-                 (h >> 24) & 0xff, (h >> 16) & 0xff,
-                 (h >> 8) & 0xff, h & 0xff);
-    }
-    q.client_ip = ipcbuf[0] ? ipcbuf : NULL;
+    q.hp = hprules_classify(e->qname, e->rcode, NULL, 0);
 
     db_add_dnsq(g_db, &q);
 
     /*
-     * 这里必须累加 dns_lines，否则日志里永远显示 "dns 0 行"。
-     * 之前 dns_lines 只在旧的 dnsmasq 日志路径（read_dns_log）里自增，
-     * 改用 AF_PACKET 嗅探后那条路径不再走，计数就一直是 0 ——
-     * 而缓存里明明有几百个 IP，看着像嗅探没工作，其实是显示的数错了。
+     * dns_lines 必须累加，否则日志里永远显示 "dns 0 行"。
+     * 旧的 dnsmasq 日志路径不再走，这个计数由嗅探回调负责。
      */
     g_stat.dns_lines++;
-
     g_stat.dns_replies++;
 }
 

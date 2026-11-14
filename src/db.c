@@ -242,7 +242,7 @@ static const char *SCHEMA_SQL =
     ");"
     "CREATE INDEX IF NOT EXISTS idx_probe_k ON probe(kind, target, ts_ms);"
 
-    /* DNS 质量：解析耗时、返回 IP、是否命中缓存 */
+    /* DNS 质量：解析耗时、应答 IP、发往哪个服务器 */
     "CREATE TABLE IF NOT EXISTS dnsq("
     "  ts_ms   INTEGER NOT NULL,"
     "  qname   TEXT    NOT NULL,"
@@ -291,6 +291,22 @@ static const char *SCHEMA_SQL =
     ");"
     ;
 
+/*
+ * 1.1.0 新增的复合索引（§5.2.1）：按 DNS 服务器聚合查询量。
+ *
+ * 为什么不放进上面的 SCHEMA_SQL 一起执行：
+ *   索引引用 server_ip，而这一列是 db_init_schema() 在 CREATE TABLE 之后
+ *   用 ensure_column() 幂等 ALTER 出来的（CREATE TABLE 里刻意不加，保证
+ *   老库能就地升级）。SCHEMA_SQL 是一次性 sqlite3_exec，若把索引放进去，
+ *   执行到 CREATE INDEX 时列还不存在 → "no such column"，整个 exec 失败，
+ *   新库和老库都打不开。
+ *
+ * 所以拆成「先建表/旧索引 → ensure_column 加列 → 再建新索引」三步。
+ * 语句本身仍是 CREATE INDEX IF NOT EXISTS，重复执行无副作用。
+ */
+static const char *SCHEMA_POST_MIGRATE_SQL =
+    "CREATE INDEX IF NOT EXISTS idx_dnsq_server ON dnsq(ts_ms, server_ip);";
+
 /* sqlite3_free 已在 sqlite3_min.h 声明，无需额外补声明 */
 
 /*
@@ -337,11 +353,51 @@ int db_init_schema(db_t *d, char *errbuf, size_t errlen)
     if (!d || !d->h) return -1;
     if (exec_sql(d->h, SCHEMA_SQL, errbuf, errlen) != 0) return -1;
 
-    /* 迁移：dnsq.client_ip（2026-11 加入，用于按设备看 DNS 行为） */
+    /* 迁移：dnsq.client_ip（2026-11 加入，用于按设备看 DNS 行为）。保留不动。 */
     if (ensure_column(d->h, "dnsq", "client_ip", "TEXT") != 0) {
         if (errbuf) snprintf(errbuf, errlen, "迁移 dnsq.client_ip 失败");
         return -1;
     }
+
+    /*
+     * 1.1.0：dnsq 新列一律走 ensure_column 幂等 ALTER。
+     * 顺序与 §5.2.1 表一致；不在 CREATE TABLE 里加，老库就地升级。
+     */
+    static const struct { const char *col; const char *decl; } dnsq_cols[] = {
+        { "server_ip",   "TEXT"                  },
+        { "server_fam",  "INTEGER DEFAULT 4"     },
+        { "server_port", "INTEGER DEFAULT 53"    },
+        { "client_fam",  "INTEGER DEFAULT 4"     },
+        { "ttl",         "INTEGER"               },
+        { "answer_cnt",  "INTEGER DEFAULT 0"     },
+        { "answer_ips",  "TEXT"                  },
+        /*
+         * 归因列（HP_*）。老行留 NULL，报表按 rcode + 本地域后缀兜底，
+         * 不需要回填 —— 回填反而会把"当时没归因"伪装成"当时判过"。
+         */
+        { "hp",          "INTEGER"               },
+    };
+    for (size_t i = 0; i < sizeof(dnsq_cols)/sizeof(dnsq_cols[0]); i++) {
+        if (ensure_column(d->h, "dnsq", dnsq_cols[i].col, dnsq_cols[i].decl) != 0) {
+            if (errbuf) snprintf(errbuf, errlen, "迁移 dnsq.%s 失败",
+                                  dnsq_cols[i].col);
+            return -1;
+        }
+    }
+
+    /* conns：LAN 侧地址 + 方向。旧行 client_ip 为 NULL，报表 COALESCE 兜底。 */
+    if (ensure_column(d->h, "conns", "client_ip", "TEXT") != 0) {
+        if (errbuf) snprintf(errbuf, errlen, "迁移 conns.client_ip 失败");
+        return -1;
+    }
+    if (ensure_column(d->h, "conns", "dir", "INTEGER DEFAULT 0") != 0) {
+        if (errbuf) snprintf(errbuf, errlen, "迁移 conns.dir 失败");
+        return -1;
+    }
+
+    /* 上面这些列都就位之后，才能建引用它们的复合索引（见 SCHEMA_POST_MIGRATE_SQL 注释） */
+    if (exec_sql(d->h, SCHEMA_POST_MIGRATE_SQL, errbuf, errlen) != 0) return -1;
+
     return 0;
 }
 
@@ -410,8 +466,8 @@ static int ensure_insert_stmt(db_t *d, char *errbuf, size_t errlen)
     const char *sql =
         "INSERT INTO conns"
         "(first_ms,last_ms,dur_ms,fam,proto,sport,dport,src,dst,sip,cidr,"
-        " host,zone,mark,pkt_o,byt_o,pkt_r,byt_r,unreplied)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        " host,zone,mark,pkt_o,byt_o,pkt_r,byt_r,unreplied,client_ip,dir)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     int rc = sqlite3_prepare_v2(d->h, sql, -1, &d->ins_conn, NULL);
     if (rc != SQLITE_OK) {
@@ -444,12 +500,12 @@ static void make_cidr(uint8_t family, const uint8_t ip[16], char *out, size_t n)
     }
 }
 
-int db_add_conn(db_t *d, const ct_key_t *k,
-                uint64_t first_ms, uint64_t last_ms,
-                uint64_t pkt_o, uint64_t byt_o,
-                uint64_t pkt_r, uint64_t byt_r,
-                uint8_t proto_hint, uint32_t zone, uint32_t mark,
-                const char *host)
+int db_add_conn_ex(db_t *d, const ct_key_t *k,
+                   uint64_t first_ms, uint64_t last_ms,
+                   uint64_t pkt_o, uint64_t byt_o,
+                   uint64_t pkt_r, uint64_t byt_r,
+                   uint8_t proto_hint, uint32_t zone, uint32_t mark,
+                   const char *host, const char *client_ip, uint8_t dir)
 {
     if (!d || !d->h || !k) return -1;
 
@@ -506,6 +562,13 @@ int db_add_conn(db_t *d, const ct_key_t *k,
     sqlite3_bind_int64(s, 18, (long long)byt_r);
     sqlite3_bind_int  (s, 19, unreplied);
 
+    /* LAN 侧地址：NULL = 旧行/旧调用（报表 COALESCE(client_ip, src) 兜底） */
+    if (client_ip && client_ip[0])
+        sqlite3_bind_text(s, 20, client_ip, -1, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_null(s, 20);
+    sqlite3_bind_int(s, 21, dir);
+
     int rc = sqlite3_step(s);
     sqlite3_reset(s);
     sqlite3_clear_bindings(s);
@@ -516,6 +579,19 @@ int db_add_conn(db_t *d, const ct_key_t *k,
     if (d->pending >= MAX_PENDING_ROWS)
         db_flush(d);
     return 0;
+}
+
+/* 旧原型保持不变：旧调用写出的行 client_ip=NULL、dir=0，口径不变。 */
+int db_add_conn(db_t *d, const ct_key_t *k,
+                uint64_t first_ms, uint64_t last_ms,
+                uint64_t pkt_o, uint64_t byt_o,
+                uint64_t pkt_r, uint64_t byt_r,
+                uint8_t proto_hint, uint32_t zone, uint32_t mark,
+                const char *host)
+{
+    return db_add_conn_ex(d, k, first_ms, last_ms,
+                          pkt_o, byt_o, pkt_r, byt_r,
+                          proto_hint, zone, mark, host, NULL, 0);
 }
 
 long db_flush(db_t *d)
@@ -690,9 +766,18 @@ int db_add_dnsq(db_t *d, const db_dnsq_t *q)
 
     if (d->pending > 0) db_flush(d);
 
+    /*
+     * 历史列处置（§5.2.1）：
+     *   answers   —— 新行写 answer_ips（真实应答 IP），为空时退回旧计数字符串，
+     *                修复「应答 IP 列显示 0/1」；旧行 "0"/"1" 由报表读时归一。
+     *   upstream  —— 1.1.0 起不再写入（该列原先是「首个应答 IP」，语义已废）。
+     *                留列不删是为了老库不用重建表、老报表仍能读历史行。
+     *   first_ip  —— 旧字段保留但不再单独写列（应答 IP 已由 answer_ips 承载）。
+     */
     static const char *SQL =
-        "INSERT INTO dnsq(ts_ms,qname,qtype,rcode,ms,answers,upstream,client_ip)"
-        " VALUES(?,?,?,?,?,?,?,?)";
+        "INSERT INTO dnsq(ts_ms,qname,qtype,rcode,ms,answers,client_ip,"
+        "server_ip,server_fam,server_port,client_fam,ttl,answer_cnt,answer_ips,hp)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(d->h, SQL, -1, &s, NULL) != SQLITE_OK)
@@ -706,18 +791,44 @@ int db_add_dnsq(db_t *d, const db_dnsq_t *q)
     if (q->ms == q->ms)
         sqlite3_bind_double(s, 5, q->ms); else sqlite3_bind_null(s, 5);
 
-    sqlite3_bind_int(s, 6, q->answers);
-
-    if (q->first_ip && q->first_ip[0])
-        sqlite3_bind_text(s, 7, q->first_ip, -1, SQLITE_TRANSIENT);
-    else
-        sqlite3_bind_null(s, 7);
+    /* answers：应答 IP 文本优先，空时退回旧计数（"0"/"1" 字符串） */
+    if (q->answer_ips && q->answer_ips[0])
+        sqlite3_bind_text(s, 6, q->answer_ips, -1, SQLITE_TRANSIENT);
+    else {
+        char cnt[16];
+        snprintf(cnt, sizeof(cnt), "%d", q->answers);
+        sqlite3_bind_text(s, 6, cnt, -1, SQLITE_TRANSIENT);
+    }
 
     /* 客户端 IP：抓不到（本机自身查询）时写 NULL，不要写空串 */
     if (q->client_ip && q->client_ip[0])
-        sqlite3_bind_text(s, 8, q->client_ip, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(s, 7, q->client_ip, -1, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_null(s, 7);
+
+    /* ---- 1.1.0 新列 ---- */
+    if (q->server_ip && q->server_ip[0])
+        sqlite3_bind_text(s, 8, q->server_ip, -1, SQLITE_TRANSIENT);
     else
         sqlite3_bind_null(s, 8);
+    sqlite3_bind_int(s, 9,  q->server_fam  ? q->server_fam  : 4);
+    sqlite3_bind_int(s, 10, q->server_port ? q->server_port : 53);
+    sqlite3_bind_int(s, 11, q->client_fam ? q->client_fam : 4);
+
+    /* ttl<=0（含 -1 未知）写 NULL，别用 0 污染平均值 */
+    if (q->ttl > 0) sqlite3_bind_int(s, 12, q->ttl);
+    else            sqlite3_bind_null(s, 12);
+
+    sqlite3_bind_int(s, 13, q->answer_cnt);
+
+    if (q->answer_ips && q->answer_ips[0])
+        sqlite3_bind_text(s, 14, q->answer_ips, -1, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_null(s, 14);
+
+    /* 归因：hp < 0 表示调用方没算（不该发生），写 NULL 而不是冒充"正常" */
+    if (q->hp >= 0) sqlite3_bind_int(s, 15, q->hp);
+    else            sqlite3_bind_null(s, 15);
 
     int rc = sqlite3_step(s);
     sqlite3_finalize(s);

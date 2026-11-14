@@ -54,13 +54,28 @@ if [ -n "$RAW" ] && [ "$RAW" -ge 60 ] && [ "$RAW" -le 2592000 ]; then
     fi
 fi
 
+# fam 协议族过滤：只接受字面量 4/6/0/空，其余一律丢弃。
+# 值是纯数字白名单，只作为参数传给 netmon-report 的 --fam，不拼接执行。
+FAM=$(printf '%s' "$QS" | tr '&' '\n' | grep '^fam=' | head -1 | cut -d= -f2)
+case "$FAM" in
+    4|6|0|'') ;;
+    *) FAM="" ;;
+esac
+# 用 if 而非 && 链：空 fam 时 && 会返回 1，在 set -e 下会让 CGI 静默退出
+if [ -n "$FAM" ]; then
+    FAM_OPT="--fam $FAM"
+else
+    FAM_OPT=""
+fi
+
 VIEW=$(printf '%s' "$QS" | tr '&' '\n' | grep '^view=' | head -1 | cut -d= -f2)
 if [ "$VIEW" != "client" ] && [ "$VIEW" != "detail" ]; then
     mkdir -p "$CACHE_DIR" 2>/dev/null || CACHE_DIR=/tmp
     # busybox 没有 stat 命令，改用「10 秒窗口编号」做文件名：
     # 同一窗口内直接命中，跨窗口自动失效，无需读 mtime。
     WIN=$(( $(date +%s) / 10 ))
-    CACHE="$CACHE_DIR/dash-${SINCE_OPT}-${WIN}.json"
+    # fam 进入缓存 key：不同协议栈视图各自缓存，避免串数据
+    CACHE="$CACHE_DIR/dash-${SINCE_OPT}-fam${FAM}-${WIN}.json"
     if [ -s "$CACHE" ]; then
         cat "$CACHE"
         exit 0
@@ -92,12 +107,14 @@ fi
 # 先接住输出再打印：后端对非法 IP 会自己输出 {"error":...} 并以非零码退出，
 # 若这里再 `|| printf` 就会拼出两段 JSON，前端 JSON.parse 直接失败。
 # 只有输出为空（进程崩了）才补一个错误对象。
+# $FAM_OPT 故意不加引号：为空时不产生参数，非空时由 shell 词分割成
+# "--fam" 与白名单值两个参数。值来自上面的 4/6/0 白名单，无注入风险。
 if [ "$VIEW" = "client" ] && [ -n "$IP" ]; then
-    OUT=$("$REPORT" client --since "$SINCE_OPT" --ip "$IP" 2>/dev/null) || true
+    OUT=$("$REPORT" client --since "$SINCE_OPT" --ip "$IP" $FAM_OPT 2>/dev/null) || true
 elif [ "$VIEW" = "detail" ] && [ -n "$DTYPE" ] && [ -n "$DKEY" ]; then
-    OUT=$("$REPORT" detail --since "$SINCE_OPT" --type "$DTYPE" --key "$DKEY" 2>/dev/null) || true
+    OUT=$("$REPORT" detail --since "$SINCE_OPT" --type "$DTYPE" --key "$DKEY" $FAM_OPT 2>/dev/null) || true
 else
-    OUT=$("$REPORT" dashboard --since "$SINCE_OPT" 2>/dev/null) || true
+    OUT=$("$REPORT" dashboard --since "$SINCE_OPT" $FAM_OPT 2>/dev/null) || true
 fi
 if [ -z "$OUT" ]; then
     OUT='{"error":"query failed"}'

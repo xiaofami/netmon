@@ -21,6 +21,60 @@
 #define MAX_CONN_ROWS  60
 #define MAX_DNS_ROWS   60
 
+/* server_label 展示映射由 netmon-report.c 提供（全局函数），
+   避免把公共解析器静态表在 detail.c 里复制一份。 */
+extern void dns_label(const char *ip, char *out, size_t n);
+
+/* 老库列容错：detail 只读打开，1.0.6 老库没有 1.1.0 的新列。
+   每次 detail_emit 用 PRAGMA table_info 探测一次并缓存；所有新列引用
+   走下面的表达式宏，列不存在时退化成合法 SQL 字面量（NULL / 常量）。
+   table / col 均为内部常量，不来自用户输入。 */
+typedef struct {
+    int probed;
+    int d_server_ip, d_ttl, d_answer_ips;                  /* dnsq */
+    int c_client_ip;                                       /* conns */
+} dcaps_t;
+static dcaps_t g_dcaps;
+
+static int dc_has_column(sqlite3 *db, const char *table, const char *col)
+{
+    char sql[128];
+    sqlite3_stmt *st = NULL;
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(%s);", table);
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    int ok = 0;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 1);
+        if (nm && !strcmp((const char *)nm, col)) { ok = 1; break; }
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static void dc_probe(sqlite3 *db)
+{
+    if (g_dcaps.probed) return;
+    g_dcaps.probed = 1;
+    g_dcaps.d_server_ip   = dc_has_column(db, "dnsq", "server_ip");
+    g_dcaps.d_ttl         = dc_has_column(db, "dnsq", "ttl");
+    g_dcaps.d_answer_ips  = dc_has_column(db, "dnsq", "answer_ips");
+    g_dcaps.c_client_ip   = dc_has_column(db, "conns", "client_ip");
+}
+
+#define DC_SERVER_IP   (g_dcaps.d_server_ip   ? "server_ip"   : "NULL")
+#define DC_TTL         (g_dcaps.d_ttl         ? "ttl"         : "NULL")
+#define DC_ANSWER_IPS  (g_dcaps.d_answer_ips  ? "answer_ips"  : "NULL")
+#define DC_CLIENT_IP   (g_dcaps.c_client_ip   ? "client_ip"   : "NULL")
+
+/* 旧行 answers 是 "0"/"1" 计数串 → 归一成空串；新行优先 answer_ips
+   列（COALESCE），显示真实应答 IP。 */
+static const char *dc_norm_answers(const char *a)
+{
+    if (!a || !*a) return "";
+    if (!strcmp(a, "0") || !strcmp(a, "1")) return "";
+    return a;
+}
+
 static uint64_t now_ms(void)
 {
     struct timespec ts;
@@ -140,10 +194,11 @@ static void emit_header(const char *type, const char *key, uint64_t from,
 static int emit_entity(sqlite3 *db, const char *type, const char *key,
                        uint64_t from, detail_name_fn name_fn)
 {
-    char title[512], app[64] = "", ek[512];
+    char title[512], app[64] = "", ek[512], sql[1024];
     const char *cat = "其他";
     int is_q = !strcmp(type, "qname");   /* DNS 域名走 dnsq 聚合，不靠 conns */
     int row = 0;                         /* 各明细段的输出行计数器，全函数复用 */
+    dc_probe(db);                        /* 老库列容错：探测一次并缓存 */
     snprintf(title, sizeof(title), "%s · %s",
              !strcmp(type, "qname") ? "DNS 域名" :
              !strcmp(type, "cidr") ? "目的网段" : "域名 / IP", key);
@@ -153,9 +208,11 @@ static int emit_entity(sqlite3 *db, const char *type, const char *key,
     long long conns = 0, devs = 0;
     double bo = 0, br = 0;
     long long first = 0, last = 0;
-    sqlite3_stmt *st = prep(db,
+    snprintf(sql, sizeof(sql),
         "SELECT COUNT(*),SUM(byt_o),SUM(byt_r),MIN(first_ms),MAX(last_ms),"
-        "COUNT(DISTINCT src) FROM conns WHERE first_ms>=? AND " ENT_COND ";");
+        "COUNT(DISTINCT COALESCE(%s, src)) FROM conns"
+        " WHERE first_ms>=? AND " ENT_COND ";", DC_CLIENT_IP);
+    sqlite3_stmt *st = prep(db, sql);
     if (st) {
         bind_entity(st, from, key);
         if (sqlite3_step(st) == SQLITE_ROW) {
@@ -228,10 +285,12 @@ static int emit_entity(sqlite3 *db, const char *type, const char *key,
             sqlite3_finalize(st);
         }
     } else {
-        st = prep(db,
-            "SELECT src,COUNT(*),SUM(byt_o),SUM(byt_r),MAX(last_ms) FROM conns"
-            " WHERE first_ms>=? AND " ENT_COND
-            " GROUP BY src ORDER BY SUM(byt_o+byt_r) DESC LIMIT 20;");
+        snprintf(sql, sizeof(sql),
+            "SELECT COALESCE(%s, src),COUNT(*),SUM(byt_o),SUM(byt_r),MAX(last_ms)"
+            " FROM conns WHERE first_ms>=? AND " ENT_COND
+            " GROUP BY 1 ORDER BY SUM(byt_o+byt_r) DESC LIMIT 20;",
+            DC_CLIENT_IP);
+        st = prep(db, sql);
         row = 0;
         if (st) {
             bind_entity(st, from, key);
@@ -298,14 +357,17 @@ static int emit_entity(sqlite3 *db, const char *type, const char *key,
 
     /* --- 连接明细 --- */
     printf("\"conns\":[");
-    st = prep(db,
-        "SELECT first_ms,last_ms,dur_ms,src,dst,dport,COALESCE(host,''),"
-        "byt_o,byt_r FROM conns WHERE first_ms>=? AND " ENT_COND
-        " ORDER BY first_ms DESC LIMIT 60;");
+    snprintf(sql, sizeof(sql),
+        "SELECT first_ms,last_ms,dur_ms,COALESCE(%s, src),dst,dport,"
+        "COALESCE(host,''),byt_o,byt_r,fam FROM conns"
+        " WHERE first_ms>=? AND " ENT_COND
+        " ORDER BY first_ms DESC LIMIT 60;", DC_CLIENT_IP);
+    st = prep(db, sql);
     row = 0;
     if (st) {
         bind_entity(st, from, key);
         while (sqlite3_step(st) == SQLITE_ROW) {
+            /* 第 3 列是 LAN 侧地址 COALESCE(client_ip, src)，用它归属设备 */
             const unsigned char *src = sqlite3_column_text(st, 3);
             const unsigned char *dst = sqlite3_column_text(st, 4);
             const unsigned char *h   = sqlite3_column_text(st, 6);
@@ -317,14 +379,16 @@ static int emit_entity(sqlite3 *db, const char *type, const char *key,
             jesc(h ? (const char *)h : "", e4, sizeof(e4));
             printf("%s{\"ts\":%lld,\"last_ms\":%lld,\"dur_ms\":%lld,"
                    "\"ip\":\"%s\",\"name\":\"%s\",\"dst\":\"%s\","
-                   "\"dport\":%d,\"host\":\"%s\",\"out\":%.0f,\"in\":%.0f}",
+                   "\"dport\":%d,\"host\":\"%s\",\"out\":%.0f,\"in\":%.0f,"
+                   "\"fam\":%d,\"client_ip\":\"%s\"}",
                    row ? "," : "",
                    sqlite3_column_int64(st, 0),
                    sqlite3_column_int64(st, 1),
                    sqlite3_column_int64(st, 2),
                    e1, e2, e3, sqlite3_column_int(st, 5), e4,
                    sqlite3_column_double(st, 7),
-                   sqlite3_column_double(st, 8));
+                   sqlite3_column_double(st, 8),
+                   sqlite3_column_int(st, 9), e1);
             row++;
         }
         sqlite3_finalize(st);
@@ -333,10 +397,12 @@ static int emit_entity(sqlite3 *db, const char *type, const char *key,
 
     /* --- DNS 查询明细 --- */
     printf("\"dns\":[");
-    st = prep(db,
-        "SELECT ts_ms,qname,qtype,rcode,ms,COALESCE(answers,''),"
-        "COALESCE(client_ip,'') FROM dnsq"
-        " WHERE ts_ms>=? AND qname=? ORDER BY ts_ms DESC LIMIT 60;");
+    snprintf(sql, sizeof(sql),
+        "SELECT ts_ms,qname,qtype,rcode,ms,COALESCE(%s, answers),"
+        "COALESCE(client_ip,''),%s,%s FROM dnsq"
+        " WHERE ts_ms>=? AND qname=? ORDER BY ts_ms DESC LIMIT 60;",
+        DC_ANSWER_IPS, DC_SERVER_IP, DC_TTL);
+    st = prep(db, sql);
     row = 0;
     if (st) {
         sqlite3_bind_int64(st, 1, (sqlite3_int64)from);
@@ -345,21 +411,30 @@ static int emit_entity(sqlite3 *db, const char *type, const char *key,
             const unsigned char *q  = sqlite3_column_text(st, 1);
             const unsigned char *a  = sqlite3_column_text(st, 5);
             const unsigned char *ci = sqlite3_column_text(st, 6);
+            const unsigned char *sv = sqlite3_column_text(st, 7);
             const char *sip = ci ? (const char *)ci : "";
             char nb[256], e1[96], e2[512], eq[512], ea[256];
+            char esv[128] = "", elabel[160] = "", label[128];
+            char jm[32] = "null", jttl[32] = "null";
             name_fn(sip, nb, sizeof(nb));
             jesc(sip, e1, sizeof(e1)); jesc(nb, e2, sizeof(e2));
             jesc(q ? (const char *)q : "", eq, sizeof(eq));
-            jesc(a ? (const char *)a : "", ea, sizeof(ea));
-            char jm[32] = "null";
+            jesc(dc_norm_answers(a ? (const char *)a : ""), ea, sizeof(ea));
+            jesc(sv ? (const char *)sv : "", esv, sizeof(esv));
+            dns_label(sv ? (const char *)sv : "", label, sizeof(label));
+            jesc(label, elabel, sizeof(elabel));
             if (sqlite3_column_type(st, 4) != SQLITE_NULL)
                 snprintf(jm, sizeof(jm), "%.2f", sqlite3_column_double(st, 4));
+            if (sqlite3_column_type(st, 8) != SQLITE_NULL)
+                snprintf(jttl, sizeof(jttl), "%d", sqlite3_column_int(st, 8));
             printf("%s{\"ts\":%lld,\"q\":\"%s\",\"qtype\":%d,\"rcode\":%d,"
-                   "\"ms\":%s,\"answers\":\"%s\",\"ip\":\"%s\",\"name\":\"%s\"}",
+                   "\"ms\":%s,\"answers\":\"%s\",\"ip\":\"%s\",\"name\":\"%s\","
+                   "\"server\":\"%s\",\"server_label\":\"%s\","
+                   "\"ttl\":%s}",
                    row ? "," : "",
                    sqlite3_column_int64(st, 0), eq,
                    sqlite3_column_int(st, 2), sqlite3_column_int(st, 3),
-                   jm, ea, e1, e2);
+                   jm, ea, e1, e2, esv, elabel, jttl);
             row++;
         }
         sqlite3_finalize(st);

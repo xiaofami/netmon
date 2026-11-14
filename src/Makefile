@@ -58,10 +58,12 @@ install: all
 	@echo "服务脚本已经就位；UCI 配置由 apk 包安装到 /etc/config/netmon，"
 	@echo "手工安装时请自行创建，或直接用 package/netmon 打包。"
 
-test: test_ctparse test_dnsmap test_dnssniff
+test: test_ctparse test_dnsmap test_dnssniff test_db test_hprules
 	./test_ctparse
 	./test_dnsmap
 	./test_dnssniff
+	./test_db
+	./test_hprules
 	@echo "单元测试全部通过"
 
 test_ctparse: test_ctparse.c ctparse.c ctparse.h
@@ -78,8 +80,12 @@ test_dnsmap: test_dnsmap.c dnsmap.c dnsmap.h
 test_dnssniff: test_dnssniff.c dnssniff.c dnssniff.h
 	$(CC) $(CFLAGS) -o $@ test_dnssniff.c
 
+# hprules 只需要 POSIX regex；规则集同步部分不在单测覆盖范围（要真机的 cache.db）
+test_hprules: test_hprules.c hprules.c hprules.h
+	$(CC) $(CFLAGS) -o $@ test_hprules.c hprules.c
+
 clean:
 	rm -f netmon netmon-report netmon.new *.o
-	rm -f test_ctparse test_db test_dnsmap test_dnssniff
+	rm -f test_ctparse test_db test_dnsmap test_dnssniff test_hprules
 
 .PHONY: all install test clean

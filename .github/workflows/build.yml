@@ -40,7 +40,7 @@ jobs:
           make test
 
       - name: 前端渲染测试
-        # 126 项断言，用 DOM 桩真跑 index.html 的脚本，数据来自仓库里的
+        # 150+ 项断言，用 DOM 桩真跑 index.html 的脚本，数据来自仓库里的
         # 脱敏 demo.html —— 不需要路由器，也不需要浏览器
         run: node build/render-test.js
 

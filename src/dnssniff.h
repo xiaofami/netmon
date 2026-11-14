@@ -34,19 +34,38 @@
 typedef struct dnssniff dnssniff_t;
 
 /*
- * 一次 DNS 观测：要么是查询（ip 为空），要么是应答（ip 有值）。
- * 应答里的 IP 就是该域名的解析结果，用于 IP -> 域名 反查。
+ * 一次 DNS 观测（1.1.0 升级）。
+ *
+ * v4 地址一律用 16 字节缓冲的 v6-mapped 形态存放
+ *   （前 10 字节 0，ip[10]=ip[11]=0xff，后 4 字节为 a.b.c.d），
+ * 与 dnsmap / ctparse 的归一约定一致；v6 原生 16 字节。
+ *
+ * 查询帧：client = ip.src、server = ip.dst、server_port = dport；
+ * 应答帧：client = ip.dst、server = ip.src、server_port = sport。
+ * 两条协议族分支都按此填充，IPv6 不再丢失客户端身份。
  */
+#define DNS_MAX_ANS 8
+
+typedef struct {
+    uint8_t  family;        /* 该应答地址协议族 4 或 6 */
+    uint8_t  ip[16];         /* v4 统一存 v6-mapped，与 dnsmap 一致 */
+    uint32_t ttl;            /* 该记录的 TTL（秒） */
+} dns_answer_t;
+
 typedef struct {
     char     qname[128];
-    int      qtype;         /* 1=A, 28=AAAA, 其他记录 */
-    int      rcode;         /* 仅应答有效 */
-    double   ms;            /* 仅应答有效：查询到应答的耗时 */
-    int      has_ip;        /* 1 = 这是应答且带解析结果 */
-    uint8_t  family;        /* 4 或 6 */
-    uint8_t  ip[16];
-    uint32_t client_ip;     /* 查询方 IPv4（网络字节序），0 表示未知 */
+    uint16_t txid;           /* DNS 事务 ID */
+    int      qtype, rcode;   /* 1=A, 28=AAAA；rcode 仅应答有效 */
+    uint16_t flags;          /* DNS header flags，供 AA/RA/TC 判定 */
+    double   ms;             /* -1 = 未配对 */
     uint8_t  is_query;
+    uint8_t  client_fam, server_fam;
+    uint8_t  client[16], server[16];   /* 全地址，v4 用 v6-mapped */
+    uint16_t server_port;
+    uint32_t client_ip;      /* 兼容旧字段：仅 v4 有效（网络字节序，取后 4 字节） */
+    uint8_t  n_ans;          /* 收集到的 A/AAAA 条数（≤ DNS_MAX_ANS） */
+    dns_answer_t ans[DNS_MAX_ANS];
+    uint16_t an_count;      /* 应答区记录总数（含 CNAME 等） */
 } dns_event_t;
 
 typedef void (*dns_cb_t)(const dns_event_t *e, void *ud);

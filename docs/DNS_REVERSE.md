@@ -1,6 +1,6 @@
 # 域名反查技术方案
 
-目标：把 conntrack 里的 "连了 1.2.3.4:443" 还原成 "连了 api.bilibili.com:443"，
+目标：把 conntrack 里的 "连了 192.0.2.10:443" 还原成 "连了 api.example.com:443"，
 这样报表才能回答"哪些站点占了带宽"。
 
 有三种做法，我都实地验证过。**结论：用方案 C（AF_PACKET 被动旁路）。**
@@ -24,7 +24,7 @@ uci set dhcp.@dnsmasq[0].logqueries=1
 uci set dhcp.@dnsmasq[0].logfacility=/some/file
 uci commit dhcp && /etc/init.d/dnsmasq restart
 ```
-然后 netmon 尾随日志文件，解析 `reply xxx is 1.2.3.4` 行。
+然后 netmon 尾随日志文件，解析 `reply xxx is 192.0.2.10` 行。
 
 ### 结论：**否决**
 
@@ -177,30 +177,30 @@ bind(fd, br-lan);       // 只监听 LAN 侧
 
 ### 实测验证
 
-先写了个最小验证程序，实测能抓到真实域名：
+先写了个最小验证程序，实测能抓到域名（下面是脱敏后的示例输出）：
 
 ```
 $ ./dnssniff2 8
-iot.isp-gateway.cn
+iot.example.com
 rawframe-probe.example
-rtmp01open.ipcam-cloud.com
-time.apple.com
+cam.example.com
+time.example.com
 --- udp53 frames=32 parsed=30 ---
 ```
 
 `parsed=30/32`，解析成功率 94%（2 个失败是 TCP 53 或其他非 A/AAAA 记录）。
 
-部署到 netmon 后，实际抓到的域名：
+部署到 netmon 后，实际抓到的域名（同样脱敏）：
 
 ```
-www.example-saas.com           46 次
-rtmp01open.ipcam-cloud.com         45 次      ← 网络摄像头
-telemetry.example-vendor.com 38 次
-api.bilibili.com            6 次
-hm.baidu.com               14 次
-c13b3dc6...a2z.com          4 次      ← 亚马逊设备遥测
-www.cloudflare.com          8 次
-github.com                  8 次
+app.example.com             46 次
+cam.example.com             45 次      ← 网络摄像头
+telemetry.example.com       38 次
+api.example.com              6 次
+stats.example.com           14 次
+device-telemetry.example.com 4 次      ← 设备遥测
+www.example.org              8 次
+git.example.org              8 次
 ```
 
 反查表缓存了 19 个 IP→域名 映射，报表里的 `top --by host` 已经能用。
@@ -209,16 +209,24 @@ github.com                  8 次
 
 **1. 监听哪个网卡**
 
-`br-lan`。因为 dnsmasq 监听在 `192.168.1.1:53`，局域网设备的查询走 br-lan。
+默认 `br-lan`。因为 dnsmasq 监听在 `192.168.1.1:53`，局域网设备的查询走 br-lan。
+这一侧抓到的帧已经包含「客户端 → 解析器」和「解析器 → 客户端」两个方向，
+足够做查询/应答配对和域名反查。
 
-不要监听 WAN：一是没必要（LAN 侧的查询已经包含了去向），
-二是 WAN 侧流量大，白白消耗 CPU。
+从 1.1.0 起可以通过 `dns_sniff_if` 改成 `any`（不 bind，收所有网卡），
+但它的用途只是排查「某些查询抓不到」：WAN 侧的转发帧在 1.1.0 里会被去重丢弃，
+不写库。默认保持 `br-lan`，日常够用且抓包量最小。
 
 **2. 配对查询和应答算耗时**
 
-DNS 报文只有 16 位事务 ID + 四元组。用 `(txid, client_ip, client_port)` 做 key：
+DNS 报文只有 16 位事务 ID + 四元组。用 `(txid, client_ip, client_port, qtype)`
+做 key：
 - 收到查询：记下时间
 - 收到应答：配对、算耗时
+
+`qtype` 必须进 key：`getaddrinfo` 会从同一客户端端口、几乎同时发出 A 和 AAAA
+两条查询，事务 ID 重号率很高；不带类型时第二条会被当成重传，两条应答必有一条
+配不上。
 
 **关键细节（踩过坑）**：两个方向的"客户端"取值不同：
 ```
@@ -232,13 +240,15 @@ DNS 报文只有 16 位事务 ID + 四元组。用 `(txid, client_ip, client_por
 局域网 DNS 命中缓存时耗时 0.1~0.5ms。用毫秒取整会全部变成 0，
 报表上一片 `0.0ms`，看不出任何差异。改用 `clock_gettime` 微秒精度后：
 ```
-iot.isp-gateway.cn            0.005 ms
-telemetry.example-vendor.com 0.006 ms
-rtmp01open.ipcam-cloud.com          0.102 ms
-www.cloudflare.com         31.100 ms
-github.com                 64.500 ms
+iot.example.com              0.005 ms
+telemetry.example.com        0.006 ms
+cam.example.com              0.102 ms
+www.example.org             31.100 ms
+git.example.org             64.500 ms
 ```
-现在能清楚区分"本地缓存命中"和"真的去查上游"。
+亚毫秒级的差异能直接看出「本机直接作答」和「真的去查上游」—— 这也是我们
+后来判定「缓存命中率不可推断」时的依据之一：时延能区分快慢，但区分不了
+「命中缓存」和「上游就在隔壁」。
 
 **4. 压缩指针的 off-by-one**
 
@@ -284,27 +294,68 @@ if (!g_sniff) {
 
 ## 遗留限制
 
-### IPv6 查询不做耗时配对
+### IPv6 已支持（1.1.0 起）
 
-v6 分支里 `client_ip = 0`，所以只有查询记录、没有耗时。
-原因：IPv6 地址 16 字节，配对表的 key 要扩到 20 字节，收益不大。
-而且家里设备走 v6 查 DNS 的比例不高。
+早期版本 v6 分支只做配对、不填客户端地址，所以 IPv6 查询没有耗时、也没法归属设备。
+1.1.0 把 `dns_event_t` 的 `client[16]` / `server[16]` 补齐（v4 用 v6-mapped，
+v6 原生 16 字节），v4 / v6 两条分支都按「查询：client=src、server=dst；应答：
+client=dst、server=src」填充，配对 key 里也带上了 `qtype`。现在 IPv6 查询同样有
+客户端、服务器、协议族、端口和耗时。
 
-如果以后要看，把 key 结构扩成 `uint8_t ip[16] + port` 即可。
+应答侧不再「遇到第一条 A 就停」：最多收集 8 条 A/AAAA（各带 TTL），
+每条都写进 `dnsmap`，所以 IPv6 目的地址也能反查到域名。落库时 `answer_ips`
+只保留前 4 个地址，控制每行写入体积；A/AAAA 条数由 `answer_cnt` 记录
+（最多 8，不含 CNAME 等其它记录）。
+
+v6 噪音也按 v4 的口径过滤：`::` / `::1`、`fe80::/10`、`ff00::/8`、
+源和目的同在本机 v6 前缀的 LAN 内互访、源是本机地址，都不计入连接。
+
+### 为什么不做缓存命中率
+
+被动旁路**读不到 dnsmasq 内部缓存表**，也拿不到 dnsmasq 自己的 hit/miss 计数。
+能做的是推断：3 秒内是否观测到本机解析器向上游转发过同一 `qname+qtype`、
+同一 `(qname,qtype,server)` 的 TTL 是否比基线下降、应答耗时是否极低、
+是否是 `.lan` / PTR 这类本地记录。
+
+1.1.0 早期版本把这套四证据推断实现并上线过（`cache_state` + `cache_ev`
+位掩码 + 页面环形图）。实测结果：在 DNS 被代理接管、上游走 DoH 的环境里，
+「观测到上游转发」这条最可靠的证据根本抓不到，判定覆盖率不到 2%，
+剩下 98% 全是「未知」。此时任何百分比都只是把「不知道」包装成结论，
+所以整套机制被移除：数据库列、JSON 字段、页面图表、查询日志的缓存列与筛选
+一并删掉，`dns_sniff_if=any` 也不再影响任何判定。
+
+现在只报可观测的事实：查询发给了谁、耗时多少、应答 IP 与 TTL。
+要判断「解析慢不慢」，看平均耗时和单条查询的耗时分布，比猜缓存命中可靠得多。
+
+### DoH / DoT 会让可观测性下降
+
+如果客户端自己走 DoH / DoT，netmon 在 udp/53 上根本看不到它的查询，这部分
+只会表现为「没有 DNS 行为」。如果**上游解析器**走 DoH / DoT，客户端到 dnsmasq
+的明文查询仍然能看到，服务器列、耗时、应答 IP 都不受影响 —— 只是看不到
+「解析器最终问了谁」，这一层本来也不在被动观测的能力范围内。
 
 ### 部分查询配不上
 
-实测约 60% 能配对。配不上的原因：
-- IPv6 查询（见上）
+配不上的常见原因：
 - 应答走了不同的网络路径（比如 dnsmasq 从 upstream 收到后走 loopback 返回）
 - 报文在缓冲区溢出时被丢
+- 客户端用了加密 DNS 或本地代理，查询与应答只有一侧经过嗅探网卡
+- 只监听了 `br-lan`，本机自己的查询走 loopback，看不到
 
 配不上时 `ms` 写 NULL（不是 0），报表里显示 `—`，不会误导成"耗时 0"。
 
 ### 只解析 A / AAAA
 
-其他记录类型（CNAME / MX / TXT / HTTPS）不记录。
-因为对"域名反查"和"解析质量"这两个用途来说，A/AAAA 就够。
+其他记录类型（CNAME / MX / TXT / HTTPS）不记录，但遍历 answer 区时会跳过它们
+继续看后面的记录，不会因为一条 CNAME 就中断。对"域名反查"和"解析质量"
+这两个用途来说，A/AAAA 就够。
+
+### 嗅探帧的边界
+
+BPF 只放行 udp/53；IPv6 分支固定按「14 字节以太头 + 40 字节基础头」取 UDP 端口，
+不跟随逐跳 / 分片 / 路由等扩展头，也不识别带 802.1Q VLAN 标签的帧。
+DNS 正常不走这些路径，少收的帧不影响转发；为兼容它们扩写 BPF 反而会引入误判，
+所以暂不扩展。
 
 ---
 
@@ -312,15 +363,14 @@ v6 分支里 `client_ip = 0`，所以只有查询记录、没有耗时。
 
 ```
 src/dnssniff.h    接口 + 顶部安全边界说明（改代码前必读）
-src/dnssniff.c    实现：AF_PACKET 收包、DNS 解析、配对
-src/test_dnssniff.c  23 项单元测试（构造以太帧验证）
+src/dnssniff.c    实现：AF_PACKET 收包、DNS 解析、v4/v6 配对
+src/test_dnssniff.c  单元测试（构造以太帧验证 v4/v6、A/AAAA、多答案、TTL、非标端口）
 src/dnsmap.c      IP -> 域名 反查表（dnsmap_add 供嗅探器直连）
 ```
 
 单测运行：
 ```bash
 make test_dnssniff && ./test_dnssniff
-# === 结果: 32 通过, 0 失败 ===
 ```
 
 ---
@@ -403,9 +453,9 @@ MISS 数量和模式完全一样 —— 不是 BPF 的问题。
 
 | 域名 | 来源设备 | A 配对 | AAAA 配对 |
 |---|---|---|---|
-| rtmp01open.ipcam-cloud.com | 网络摄像头 | 1180/1180 | **1180/1180** ✅ |
-| www.example-saas.com | Desktop-1 | 171/171 | **1/171** ❌ |
-| telemetry.example-vendor.com | Desktop-1 | 159/159 | **1/159** ❌ |
+| cam.example.com | 网络摄像头 | 1180/1180 | **1180/1180** ✅ |
+| app.example.com | Desktop-1 | 171/171 | **1/171** ❌ |
+| telemetry.example.com | Desktop-1 | 159/159 | **1/159** ❌ |
 
 **关键观察：抓 AAAA 的能力本身是正常的**（某摄像头域名 1180/1180 完美）。
 只有 Desktop-1 这一台设备的 AAAA 查询不可见，而它的 A 查询完全正常。

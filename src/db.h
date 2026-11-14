@@ -50,6 +50,24 @@ int   db_add_conn(db_t *d, const ct_key_t *k,
                   uint8_t proto_hint, uint32_t zone, uint32_t mark,
                   const char *host);
 
+/*
+ * 带「LAN 侧地址 + 方向」的扩展写入（1.1.0）。
+ *
+ * client_ip : LAN 侧地址文本（设备归属）；NULL 表示旧行/旧调用，由报表
+ *             COALESCE(client_ip, src) 兜底。
+ * dir       : 0 = LAN→WAN（client_ip 即 src），1 = WAN→LAN（client_ip 即 dst，
+ *             且调用方应已把 orig/repl 互换，保证 byt_o 恒为上传）。
+ *
+ * 旧 db_add_conn() 原型保持不变，内部以 client_ip=NULL、dir=0 调用本函数，
+ * 使旧调用（含单测）写出的行与历史口径完全一致。
+ */
+int   db_add_conn_ex(db_t *d, const ct_key_t *k,
+                     uint64_t first_ms, uint64_t last_ms,
+                     uint64_t pkt_o, uint64_t byt_o,
+                     uint64_t pkt_r, uint64_t byt_r,
+                     uint8_t proto_hint, uint32_t zone, uint32_t mark,
+                     const char *host, const char *client_ip, uint8_t dir);
+
 /* 显式提交当前事务。返回本次提交的行数，失败返回 -1。 */
 long  db_flush(db_t *d);
 
@@ -121,6 +139,27 @@ typedef struct {
      * 本机（路由器自己）的查询没有 br-lan 以太帧，此字段为 NULL。
      */
     const char *client_ip;
+
+    /* ---- 1.1.0 新增（旧字段语义不变，只增不改） ----
+     * 这些字段把「查询发给谁、应答是什么」补全 —— 全部来自报文本身，
+     * 不做任何推断。缓存命中率不在这里：被动旁路读不到解析器的缓存表，
+     * 靠时延/转发/TTL 猜出来的数字误差太大，1.1.0 起不再提供该结论。 */
+    uint8_t     client_fam;      /* 客户端地址协议族 4/6 */
+    const char *server_ip;       /* 查询发往的 DNS 服务器（v4/v6 文本） */
+    uint8_t     server_fam;      /* 服务器地址协议族 4/6 */
+    int         server_port;     /* 服务端端口（识别非标端口/代理 DNS） */
+    int         ttl;             /* 首个 A/AAAA 应答 TTL（秒），-1 = 未知，<=0 落库写 NULL */
+    int         answer_cnt;      /* A/AAAA 应答条数 */
+    const char *answer_ips;     /* 逗号分隔的应答 IP（v4/v6 混排），空则写 NULL */
+
+    /*
+     * 归因结论（HP_* 见 hprules.h），写入时由 hprules_classify() 算好。
+     *
+     * 为什么要把结论存下来而不是查询时现算：规则集会变，事后用新规则
+     * 去解释旧行，等于篡改历史。存当时的事实，才能回答"那天到底拦没拦"。
+     * -1 表示未归因（老行 / homeproxy 不可用），报表按 rcode + 后缀兜底。
+     */
+    int         hp;
 } db_dnsq_t;
 
 int db_add_dnsq(db_t *d, const db_dnsq_t *q);

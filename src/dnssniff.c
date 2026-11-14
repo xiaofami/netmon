@@ -25,9 +25,18 @@
 #include <time.h>
 #include <stdint.h>
 #include <sys/socket.h>
+/*
+ * AF_PACKET / 经典 BPF 是 Linux 专有 API，只有路由器目标机（OpenWrt）才有。
+ * 本项目在开发机（macOS）上只跑纯解析单元测试（parse_dns / handle_frame
+ * 都不依赖这些头），因此把 Linux 头与用到它的 socket 初始化/统计代码
+ * 用 __linux__ 隔开，让非 Linux 环境也能编译、跑单测。
+ * Linux 分支的 BPF 过滤器逻辑保持原样，一行未改。
+ */
+#ifdef __linux__
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
 #include <linux/filter.h>
+#endif
 #include <arpa/inet.h>
 #include <net/if.h>
 
@@ -76,9 +85,9 @@ struct dnssniff {
 /*
  * 内部计时用微秒。
  *
- * 为什么不用毫秒：局域网 DNS 命中缓存时耗时是 0.1~0.5ms，
+ * 为什么不用毫秒：局域网解析器应答常在 0.1~0.5ms 量级，
  * 用毫秒取整会全部变成 0，报表上一片 0.0ms，看不出任何差异。
- * 微秒精度才能区分"本地缓存"和"真的去查上游"。
+ * 微秒精度才能区分"隔壁应答"和"真的绕了一圈回来"。
  */
 static uint64_t now_us(void)
 {
@@ -221,6 +230,14 @@ static uint64_t pend_get_and_del(dnssniff_t *s, uint32_t txid,
  *  18  RET 0                       ; 丢弃
  *  19  RET 0x40000                 ; 接受整帧
  */
+/*
+ * IPv6 VLAN 帧 / 扩展头说明（§5.1.2，有意不扩展 BPF）：
+ * IPv6 分支固定按「14 字节以太头 + 40 字节 v6 头」取 UDP 端口（偏移 54/56），
+ * 所以既不识别带 802.1Q VLAN 标签的帧，也不跟随逐跳/分片/路由等扩展头。
+ * DNS 报文正常不走扩展头，为兼容它们去扩写 BPF 反而会引入误判风险，
+ * 故暂不扩展。代价只是「少收一些帧」，不影响转发，也不影响主流程。
+ */
+#ifdef __linux__
 static int attach_dns_filter(int fd)
 {
     struct sock_filter code[] = {
@@ -257,9 +274,11 @@ static int attach_dns_filter(int fd)
 
     return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog));
 }
+#endif  /* __linux__ —— 非 Linux 不需要也不定义该函数 */
 
 dnssniff_t *dnssniff_open(const char *ifname, char *errbuf, size_t errlen)
 {
+#ifdef __linux__
     dnssniff_t *s = calloc(1, sizeof(*s));
     if (!s) {
         if (errbuf) snprintf(errbuf, errlen, "内存不足");
@@ -345,6 +364,13 @@ dnssniff_t *dnssniff_open(const char *ifname, char *errbuf, size_t errlen)
         s->rcvbuf_bytes = got;
 
     return s;
+#else
+    /* 非 Linux 没有 AF_PACKET：返回失败，由 sniff_start() 降级为警告，
+       不影响监控主流程，也不影响 DNS 本身。纯解析函数仍可被单测直接调用。 */
+    (void)ifname;
+    if (errbuf && errlen) snprintf(errbuf, errlen, "AF_PACKET 仅在 Linux 可用");
+    return NULL;
+#endif
 }
 
 void dnssniff_close(dnssniff_t *s)
@@ -448,9 +474,12 @@ static int parse_dns(const uint8_t *base, int len, dns_event_t *e)
     const uint8_t *end = base + len;
 
     e->is_query = !is_resp;
+    e->txid  = (uint16_t)((base[0] << 8) | base[1]);
+    e->flags = flags;
     e->qtype = 0;
     e->rcode = flags & 0x000f;
-    e->has_ip = 0;
+    e->n_ans = 0;
+    e->an_count = 0;
 
     /* 第一个问题：qname + qtype + qclass */
     const uint8_t *after = NULL;
@@ -463,7 +492,17 @@ static int parse_dns(const uint8_t *base, int len, dns_event_t *e)
 
     if (!is_resp) return 1;
 
-    /* 应答：从 answer 区里找第一条 A/AAAA */
+    /*
+     * 应答：遍历整个 answer 区。
+     *
+     * 早期版本遇到第一条 A/AAAA 就 break —— 双栈应答先给 A 再给 AAAA 时，
+     * AAAA 结果不进 dnsmap，IPv6 目的 IP 永远反查不到域名（P4）。
+     * 现在：
+     *   - 每条记录都计入 an_count（应答区记录总数，含 CNAME 等）
+     *   - 收集最多 DNS_MAX_ANS 条 A/AAAA 进 ans[]，各带自己的 TTL
+     *   - CNAME 等其它类型跳过 rdata 但继续循环，绝不中断
+     * 压缩指针解析（read_name）保持原逻辑不变。
+     */
     for (uint16_t i = 0; i < an; i++) {
         char tmp[128];
         const uint8_t *nxt = NULL;
@@ -471,29 +510,47 @@ static int parse_dns(const uint8_t *base, int len, dns_event_t *e)
         p = nxt;
 
         if (p + 10 > end) break;
-        uint16_t type = (uint16_t)((p[0] << 8) | p[1]);
+        uint16_t type  = (uint16_t)((p[0] << 8) | p[1]);
+        uint32_t ttl   = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16)
+                       | ((uint32_t)p[6] << 8)  | (uint32_t)p[7];
         uint16_t rdlen = (uint16_t)((p[8] << 8) | p[9]);
-        p += 10;
+        const uint8_t *rdata = p + 10;
+        if (rdata + rdlen > end) break;
 
-        if (p + rdlen > end) break;
+        e->an_count++;
 
-        if (type == 1 && rdlen == 4) {              /* A */
-            e->has_ip = 1; e->family = 4;
-            memset(e->ip, 0, 16);
-            /* 存成 v4-mapped，和 conntrack 那边保持一致 */
-            e->ip[10] = 0xff; e->ip[11] = 0xff;
-            memcpy(e->ip + 12, p, 4);
-            break;
+        if ((type == 1 && rdlen == 4) || (type == 28 && rdlen == 16)) {
+            if (e->n_ans < DNS_MAX_ANS) {
+                dns_answer_t *a = &e->ans[e->n_ans++];
+                a->family = (type == 1) ? 4 : 6;
+                a->ttl = ttl;
+                memset(a->ip, 0, 16);
+                if (type == 1) {                 /* A：v6-mapped */
+                    a->ip[10] = 0xff; a->ip[11] = 0xff;
+                    memcpy(a->ip + 12, rdata, 4);
+                } else {                          /* AAAA：原生 16 字节 */
+                    memcpy(a->ip, rdata, 16);
+                }
+            }
         }
-        if (type == 28 && rdlen == 16) {            /* AAAA */
-            e->has_ip = 1; e->family = 6;
-            memcpy(e->ip, p, 16);
-            break;
-        }
-        p += rdlen;
+        /* CNAME 等：跳过 rdata，继续下一条 */
+        p = rdata + rdlen;
     }
 
     return 2;
+}
+
+/*
+ * 把 4 字节 IPv4 地址填进 16 字节缓冲的 v6-mapped 形态。
+ * 与 dnsmap 的 norm_key / ctparse 的约定一致：
+ *   前 10 字节 0，ip[10]=ip[11]=0xff，后 4 字节 = a.b.c.d。
+ * client / server 统一用这个形态，v6 则原样 16 字节。
+ */
+static void fill_v4mapped(uint8_t out[16], const uint8_t v4[4])
+{
+    memset(out, 0, 16);
+    out[10] = 0xff; out[11] = 0xff;
+    memcpy(out + 12, v4, 4);
 }
 
 /*
@@ -583,7 +640,14 @@ static void handle_frame(dnssniff_t *s, const uint8_t *f, int n,
         if (r == 1) {
             s->st.dns_queries++;
             e.is_query = 1;
-            e.client_ip = client_ip;                 /* 源 = 客户端 */
+            /* 查询帧：client=ip.src、server=ip.dst、server_port=dport */
+            e.client_fam = 4; e.server_fam = 4;
+            fill_v4mapped(e.client, ip + 12);
+            fill_v4mapped(e.server, ip + 16);
+            e.server_port = (uint16_t)dport;
+            e.txid  = (uint16_t)txid;
+            e.flags = (uint16_t)((dns[2] << 8) | dns[3]);
+            e.client_ip = client_ip;                 /* 源 = 客户端，网络字节序 */
             /*
              * qtype 必须一起存：A 和 AAAA 会共用 txid/端口，不带类型会互相覆盖。
              * ckey 用 v4 地址本身（高 32 位补 0），与 v6 分支的哈希值域不冲突：
@@ -600,6 +664,13 @@ static void handle_frame(dnssniff_t *s, const uint8_t *f, int n,
             memcpy(&dst_ip, ip + 16, 4);             /* 目的 = 客户端 */
             s->st.dns_replies++;
             e.is_query = 0;
+            /* 应答帧：client=ip.dst、server=ip.src、server_port=sport */
+            e.client_fam = 4; e.server_fam = 4;
+            fill_v4mapped(e.client, ip + 16);
+            fill_v4mapped(e.server, ip + 12);
+            e.server_port = (uint16_t)sport;
+            e.txid  = (uint16_t)txid;
+            e.flags = (uint16_t)((dns[2] << 8) | dns[3]);
             e.client_ip = dst_ip;
             uint64_t q0 = pend_get_and_del(s, txid, (uint64_t)dst_ip, dport,
                                            (uint16_t)e.qtype);
@@ -657,6 +728,14 @@ static void handle_frame(dnssniff_t *s, const uint8_t *f, int n,
         if (r == 1) {
             s->st.dns_queries++;
             e.is_query = 1;
+            /* 查询帧：client=ip.src(8)、server=ip.dst(24)、server_port=dport */
+            e.client_fam = 6; e.server_fam = 6;
+            memcpy(e.client, ip + 8, 16);
+            memcpy(e.server, ip + 24, 16);
+            e.server_port = (uint16_t)dport;
+            e.txid  = (uint16_t)txid;
+            e.flags = (uint16_t)((dns[2] << 8) | dns[3]);
+            /* client_ip 兼容字段仅 v4 有效，v6 保持 0 */
             pend_put(s, txid, mix64_addr(addr), sport, (uint16_t)e.qtype, t);
             if (dbg)
                 fprintf(stderr, "[dnsdbg] v6 QUERY %s qt=%d tx=%04x "
@@ -667,6 +746,13 @@ static void handle_frame(dnssniff_t *s, const uint8_t *f, int n,
         } else {
             s->st.dns_replies++;
             e.is_query = 0;
+            /* 应答帧：client=ip.dst(24)、server=ip.src(8)、server_port=sport */
+            e.client_fam = 6; e.server_fam = 6;
+            memcpy(e.client, ip + 24, 16);
+            memcpy(e.server, ip + 8, 16);
+            e.server_port = (uint16_t)sport;
+            e.txid  = (uint16_t)txid;
+            e.flags = (uint16_t)((dns[2] << 8) | dns[3]);
             uint64_t q0 = pend_get_and_del(s, txid, mix64_addr(addr), dport,
                                            (uint16_t)e.qtype);
             if (!q0) s->st.pending_unpaired++;
@@ -719,12 +805,16 @@ int dnssniff_pump(dnssniff_t *s, dns_cb_t cb, void *ud)
      * 这个数字能直接回答"是不是缓冲区溢出丢的" ——
      * 如果它一直是 0 却仍有 MISS，那就是别的环节的问题。
      */
+#ifdef __linux__
     if (got) {
         struct tpacket_stats kst;
         socklen_t sl = sizeof(kst);
         if (getsockopt(s->fd, SOL_PACKET, PACKET_STATISTICS, &kst, &sl) == 0)
             s->st.kernel_drops += kst.tp_drops;
     }
+#else
+    (void)got;   /* 非 Linux 无 PACKET_STATISTICS */
+#endif
 
     return got;
 }

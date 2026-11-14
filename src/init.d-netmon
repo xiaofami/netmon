@@ -29,6 +29,9 @@ start_service() {
 	config_get      interval main interval  5
 	config_get      retain   main retain    30
 	config_get      loglevel main loglevel  0
+	# DNS 嗅探接口（br-lan / any）；any 由 netmon 内部映射成「不 bind 网卡、
+	# 收全部网卡」，这里原样传值即可。
+	config_get      sniffif  main dns_sniff_if "br-lan"
 	[ "$enabled" = "1" ] || {
 		logger -t netmon "disabled in config, not starting"
 		return 0
@@ -46,7 +49,8 @@ start_service() {
 	procd_set_param command "$PROG" \
 		-d "$dbpath" \
 		-i "$((interval * 1000))" \
-		-r "$retain"
+		-r "$retain" \
+		--sniff-if "$sniffif"
 
 	[ "$loglevel" = "1" ] && procd_append_param command -v
 
@@ -62,7 +66,7 @@ start_service() {
 
 	procd_close_instance
 
-	logger -t netmon "started: bin=$PROG db=$dbpath interval=${interval}s retain=${retain}d"
+	logger -t netmon "started: bin=$PROG db=$dbpath interval=${interval}s retain=${retain}d sniff_if=$sniffif"
 }
 
 service_triggers() {

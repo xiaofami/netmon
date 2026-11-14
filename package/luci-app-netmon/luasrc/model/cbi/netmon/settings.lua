@@ -102,6 +102,13 @@ o = s:option(Flag, "loglevel", translate("调试日志"),
 o.default = "0"
 o.rmempty = false
 
+o = s:option(ListValue, "dns_sniff_if", translate("DNS 嗅探接口"),
+    translate("br-lan（默认）只看 LAN 侧帧，抓包量最小，日常够用；any 会收全部网卡的帧，只在排查「某些查询抓不到」时才需要。纯旁路只读抓包，不发包、不改任何配置，不影响 DNS 转发与设备上网。"))
+o:value("br-lan", "br-lan（默认，推荐）")
+o:value("any", "any（排查用，抓包量更大）")
+o.default = "br-lan"
+o.rmempty = false
+
 -- 后台执行：先让保存页面返回，再重载服务，避免 uhttpd reload 卡住请求。
 function m.on_after_commit(self)
     sys.call("(sleep 1; /usr/bin/netmon-apply >/dev/null 2>&1) &")

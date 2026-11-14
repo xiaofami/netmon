@@ -52,14 +52,14 @@ function el(id) { if (!els.has(id)) els.set(id, mkEl(id)); return els.get(id); }
 function navEls(attr, values) {
   return values.map(v => { const e = mkEl(''); e.getAttribute = k => k === attr ? v : null; return e; });
 }
-const views = ['overview','clients','client','blocks','traffic','queries','domains','system','detail']
+const views = ['overview','clients','client','blocks','traffic','queries','dns','domains','system','detail']
   .map(v => { const e = mkEl('v-' + v); e.getAttribute = k => k === 'data-nav' ? v : null; return e; });
 
 const document = {
   documentElement: mkEl('html'), body: mkEl('body'),
   getElementById: id => el(id),
   querySelectorAll(sel) {
-    if (sel === '[data-nav]') return navEls('data-nav', ['overview','clients','blocks','traffic','queries','domains','system']);
+    if (sel === '[data-nav]') return navEls('data-nav', ['overview','clients','blocks','traffic','queries','dns','domains','system']);
     if (sel === '[data-since]') return navEls('data-since', ['3600','86400','604800']);
     if (sel === '[data-f]') return navEls('data-f', ['all','active','static','auto','fav']);
     if (sel === '[data-l]') return navEls('data-l', ['card','list']);
@@ -211,7 +211,87 @@ check('目的网段', has('traffic-cidr', 'class="row') || has('traffic-cidr', '
 console.log('\n== 其余视图 ==');
 go('#/queries');
 check('查询日志表格', (el('queries-body').innerHTML.match(/data-goto/g) || []).length > 10);
-check('状态说明', has('queries-note', 'NXDOMAIN'));
+check('状态说明说清四类结果', has('queries-note', '广告拦截') && has('queries-note', '解析失败'));
+check('说明区解释了域重试的成因', has('queries-note', '搜索域') && has('queries-note', '域重试'));
+/* 伴生重试默认不出现在列表里；打开「含重试」才显示（数据来自 demo 的 retry 字段） */
+{
+  const retryRows = demo.dashboard.dns_recent.filter(r => r.retry).length;
+  /* filteredQueries 在 vm 上下文里，用求值调用并临时把其它筛选清零，
+     否则前面断言留下的 cls/rcode 会影响计数 */
+  const cnt = r => vm.runInNewContext(
+    '(function(){var o={cls:S.cls,rcode:S.rcode,qq:S.qq,srv:S.dnsServer,retry:S.retry};' +
+    'S.cls="all";S.rcode="all";S.qq="";S.dnsServer="";S.retry=' + r + ';' +
+    'var n=filteredQueries(NETMON_DEMO.dashboard).length;' +
+    'S.cls=o.cls;S.rcode=o.rcode;S.qq=o.qq;S.dnsServer=o.srv;S.retry=o.retry;return n;})()',
+    sandbox);
+  const before = cnt(0), after = cnt(1);
+  check('默认隐藏域重试行', retryRows > 0 && after - before === retryRows,
+    '重试 ' + retryRows + ' 行，过滤后 ' + before + '→' + after);
+}
+console.log('\n== DNS 解析（服务器 / 协议栈） ==');
+go('#/dns');
+check('DNS 视图 KPI 渲染', has('dns-kpi', 'DNS 服务器') && has('dns-kpi', '平均响应'));
+check('KPI 不再给缓存命中率', !has('dns-kpi', '缓存命中率') && !has('dns-kpi', '判定覆盖率'));
+check('服务器表有行', (el('dns-servers').innerHTML.match(/g-srv/g) || []).length >= 2,
+  (el('dns-servers').innerHTML.match(/g-srv/g) || []).length + ' 行');
+check('服务器显示识别名称', has('dns-servers', 'dnsmasq'));
+check('服务器表标出协议族', has('dns-servers', 'IPv6'));
+check('服务器表给出查询占比', has('dns-servers', '%'));
+check('服务器表给出均耗时', has('dns-servers', 'ms'));
+check('分栈对比 IPv4/IPv6', has('dns-stack', 'IPv4') && has('dns-stack', 'IPv6'));
+check('说明区讲清服务器来源是报文', has('dns-note', '报文'));
+check('说明区交代为什么不做缓存命中率', has('dns-note', '缓存命中率'));
+check('旧环形图与判定依据面板已移除',
+  !/id="dns-donut"/.test(html) && !/id="dns-ev"/.test(html) && !/id="dns-legend"/.test(html));
+
+/* 空数据兜底：没有服务器信息时不能白屏，要给一句人话 */
+const savedServers = demo.dashboard.dns_servers;
+demo.dashboard.dns_servers = [];
+go('#/dns');
+check('无服务器数据时给引导文案',
+  has('dns-servers', '没有服务器信息') || has('dns-servers', '更早的历史行'));
+demo.dashboard.dns_servers = savedServers;
+go('#/dns');
+check('恢复数据后正常渲染', has('dns-servers', 'dnsmasq'));
+
+/* 认不出来的服务器：label 就是 IP 本身，同一行不能把地址打两遍 */
+const saved2 = demo.dashboard.dns_servers;
+demo.dashboard.dns_servers = [
+  { ip: '198.18.0.9', label: '198.18.0.9', fam: 4, port: 5353, n: 2, avg_ms: 1.5 }
+];
+go('#/dns');
+{
+  /* 地址只该出现在主标题里；副标题（.addr）只剩下端口信息 */
+  const h = el('dns-servers').innerHTML;
+  check('未识别服务器不在副标题里重复地址', !/class="addr">[^<]*198\.18\.0\.9/.test(h));
+  check('未识别服务器仍标出非标准端口', has('dns-servers', '端口 5353'));
+}
+demo.dashboard.dns_servers = saved2;
+go('#/dns');
+
+console.log('\n== 查询日志：服务器列 ==');
+go('#/queries');
+check('服务器列有名称', has('queries-body', 'dnsmasq') || has('queries-body', '阿里'));
+check('缓存列已移除', !has('queries-body', '命中缓存') && !has('queries-body', '未命中'));
+check('TTL 随应答列显示', has('queries-body', 'TTL'));
+check('应答列不再显示 0/1 计数',
+  !/<div class="num c-ans"[^>]*>\s*(0|1)\s*<\/div>/.test(el('queries-body').innerHTML));
+check('服务器下拉按数据生成', /option/.test(el('srv-box').innerHTML));
+check('缓存筛选下拉已移除', !/id="cache-box"/.test(html));
+/* demo 里有多台服务器 → 列必须显示 */
+check('多服务器时展开该列', !el('v-queries').className.includes('no-srv'));
+/* 全部指向同一台时（局域网默认）该列与下拉一起收起 */
+{
+  const one = JSON.parse(JSON.stringify(demo.dashboard));
+  for (const r of one.dns_recent) { r.server = '192.168.2.1'; r.server_label = '本机 dnsmasq'; }
+  sandbox.__one = one;
+  vm.runInNewContext('renderQueries(__one)', sandbox);
+  check('单一服务器时收起该列', el('v-queries').className.includes('no-srv'));
+  check('单一服务器时隐藏下拉', el('srv-box').style.display === 'none');
+  go('#/queries');   /* 恢复 */
+  check('切回多服务器数据后恢复', !el('v-queries').className.includes('no-srv'));
+}
+
 go('#/domains');
 check('DNS 排行', has('domains-dns', 'pill'));
 check('流量排行', has('domains-traffic', 'bar'));

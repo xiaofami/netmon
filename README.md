@@ -46,7 +46,30 @@ netmon 想回答的是更难的那类问题：
 ### 总览
 六张 KPI（查询量、活跃客户端、拦截数、平均响应、总流量、库体积）+ DNS 活动趋势 +
 流量趋势 + 最活跃设备 + 热门域名 + 站内告警 + 一句话摘要。顶部自动判断
-「现在最值得关注的一件事」，点进去就是对应视图。
+「现在最值得关注的一件事」，点进去就是对应视图。告警条目可以直接点击，
+跳转时自动带上对应的筛选条件（应答码 / 设备 / 服务器），不是只给一句文字建议。
+空库时顶部会出现三步引导：确认服务在跑 → 确认流量经过本机 → 看系统信息。
+
+### DNS 解析
+单独一页回答「查询到底发给了谁」：
+
+- **服务器榜**：客户端实际查询过的 DNS 服务器、查询量、占全网查询的比例、
+  平均耗时，每行标 `IPv4` / `IPv6`。点一行直接进查询日志，并带上服务器筛选。
+- **协议栈对比**：v4 / v6 的连接数与上下行并排看。
+- **固定说明**：讲清服务器地址取自报文本身（不是推断），以及为什么这一版
+  不提供「缓存命中率」。
+
+这一页最实际的用途是发现异常：如果某台设备绕开路由器、直连外部解析器，
+这里会多出一行（本机 dnsmasq 通常占绝大多数）。
+
+服务器名称是纯展示映射：本机接口地址显示「本机 dnsmasq」（其它端口显示
+「本机解析服务」），常见公共解析器显示「阿里 / 腾讯 / 114DNS / Cloudflare /
+Google / Quad9 / 百度」，私有地址显示「局域网 DNS」，其余原样显示 IP。
+这张表不参与任何采集或转发决策。
+
+> **为什么没有缓存命中率**：被动旁路读不到 dnsmasq 内部缓存表。靠「是否观测到
+> 上游转发 / 应答时延 / TTL 衰减」去推断，在 DNS 走代理或 DoH / DoT 的环境里
+> 判定覆盖率不到 2%，数字没有参考价值。1.1.0 曾实现过这套推断，实测后移除。
 
 ### 客户端与设备画像
 ![客户端](screenshots/clients.png)
@@ -55,9 +78,12 @@ netmon 想回答的是更难的那类问题：
 - **多网卡识别**：同一台机器的有线和无线是两张网卡，会标「多网卡」而不是算成重复。
 - **静态未生效提示**：配了静态租约但设备还在用旧地址时，卡片上直接标出旧地址。
 - **收藏 / 备注**：写在浏览器 localStorage，不落库、不同步。
+- **IPv4 + IPv6 一起算**：连接按「LAN 侧地址」归属设备，不再只认 IPv4 源地址。
+  无 NAT 的 IPv6 入站连接也能归到设备，采集侧会把方向归一，上下行不会颠倒。
 
 设备详情页有 DNS 活动、流量趋势、应答分布三块图，以及常访域名、查询日志、
-流量目的地等可翻页榜单：
+流量目的地等可翻页榜单。详情页的返回按钮回到来源视图（查询日志 / 域名排行 /
+设备列表），不再是固定跳客户端列表：
 
 ![设备详情](screenshots/client.png)
 
@@ -74,26 +100,43 @@ netmon 想回答的是更难的那类问题：
 
 下载 / 上传分开统计，四张榜（设备上下行、域名 IP 上下行），可切合计排序；
 另有目的网段分布。数据源是 conntrack 的字节计数差，不是抓包统计。
+IPv4 与 IPv6 合并统计，按连接的 LAN 侧地址归属设备；网段行标出协议族
+（v4 按 `/24`、v6 按 `/48` 聚合）。AAAA 应答也会写进域名反查表，
+所以 IPv6 目的地址同样能显示成域名，而不是只剩裸地址。
 
 ### 查询日志 / 域名排行
 ![查询日志](screenshots/queries.png)
 ![域名排行](screenshots/domains.png)
 
 两秒级查询日志（可翻页、可按归因筛选）、域名排行（按查询量 / 按流量）、
-一键导出 CSV。
+一键导出 CSV。1.1.0 起查询日志多了一列「DNS 服务器」：
+
+- **DNS 服务器**：客户端真正把查询发给了谁（应答的源地址），显示识别名称。
+- **应答 IP**：新行显示真实应答地址（v4 / v6 混排），下面一行小字是应答 TTL。
+  1.1.0 之前的旧行没有应答地址，显示「—」。
+
+筛选条件（应答码、归因、服务器、页码）会写进 URL，刷新浏览器不丢。
+「导出」导出的是**当前筛选结果**，列与页面一致，包含服务器、TTL、耗时、
+应答 IP。
 
 ### 系统信息
 ![系统信息](screenshots/system.png)
 
-对标 pfSense 的 dashboard widget：接口收发、conntrack 状态、每日流量总量、
-数据库体积。全部只读 `/proc`。
+对标 pfSense 的 dashboard widget：接口收发、conntrack 状态（含 v4 / v6 拆分）、
+每日流量总量、数据库体积、DNS 服务器数、IPv6 连接数。全部只读 `/proc`。
 
 ### 其它
 
+- **8 个导航视图**：总览 / 客户端 / 拦截记录 / 流量排行 / DNS 解析 / 查询日志 /
+  域名排行 / 系统信息，另有两个下钻视图（设备详情、条目详情）。
+- **按视图刷新**：设备详情只刷 `client`、条目详情只刷 `detail`，其余只刷
+  `dashboard`；输入框正在输入时跳过本轮，不打断用户。
 - **6 套皮肤**：深色 / 浅色 / Midnight / Nord / Solar / 高对比，纯 CSS 变量。
-- **移动端适配**：390px 下自动切顶部导航与单列卡片。
+- **移动端适配**：390px 下自动切顶部导航与单列卡片，新增列由 `labelizeRows()`
+  自动带标签。
 - **零前端依赖**：单文件原生 JS，无框架、无 CDN、无构建步骤。
-- **LuCI 集成**：出现在「状态 → 监控面板」，可配端口、监听地址、保留天数、采样间隔。
+- **LuCI 集成**：出现在「状态 → 监控面板」，可配端口、监听地址、保留天数、
+  采样间隔、DNS 嗅探接口。
 
 <img src="screenshots/mobile.png" width="320" alt="移动端">
 
@@ -106,7 +149,7 @@ netmon 想回答的是更难的那类问题：
 netmon 的两个数据源都是**本机视角**：
 
 1. `/proc/net/nf_conntrack` —— 本机转发的连接
-2. `br-lan` 上 AF_PACKET 嗅探 udp/53 —— 本机收到的 DNS 包
+2. `br-lan`（可改成 `any`）上 AF_PACKET 嗅探 udp/53 —— 本机收到的 DNS 包
 
 所以它只能看见「经过自己」的东西。按旁路由的常见配法分三种情况：
 
@@ -129,24 +172,35 @@ B/C 形态下这是最明显的体验落差。
 ### 几个实用开关
 
 ```sh
-# 嗅探所有网卡（多网段 / 走 tun 的代理环境，排查「某些查询抓不到」）
+# 1) 嗅探接口：默认 br-lan 只看 LAN 侧；改成 any 收全部网卡
+uci set netmon.main.dns_sniff_if='any'
+uci commit netmon
+/usr/bin/netmon-apply
+
+# 也可以前台临时手跑（不写 UCI）
 netmon --sniff-if any
 
-# 启动时会打印识别到的本地网段，确认对不对
+# 启动时会打印识别到的本地网段（含 IPv6），确认对不对
 logread -e netmon | grep 本地网段
 
-# 看周期心跳（采样耗时、DNS 应答率、库大小）：需要启动时加 -v，
-# 否则这类 debug 级日志不落盘，免得挤掉 logd 里别的服务
-logread -e netmon | grep stat:
+# 看周期心跳（采样耗时、DNS 应答率、库大小）：
+# 需要启动时加 -v（或 UCI loglevel=1），否则 debug 级日志不落盘
+logread -e netmon | grep 'stat:'
 ```
 
-同网段互访不计流量这条，靠启动时枚举本机接口地址自动得出，**换网段不用改配置**。
-PPPoE 的 `/32` 点对点地址会被跳过 —— 它的 WAN IP 往往是 `10.x`，但那是真实出网流量。
+`dns_sniff_if=any` 只在排查「某些查询抓不到」时用：它收全部网卡的帧，
+CPU 与抓包量都会增加，日常没有额外收益（默认 `br-lan`）。
+AF_PACKET 上的 BPF 仍然只放行 udp/53，且不改任何转发配置。
+
+同网段互访不计流量这条，靠启动时枚举本机接口地址与掩码自动得出（IPv4 与 IPv6
+前缀都收），**换网段不用改配置**。PPPoE 的 `/32` 点对点地址不参与同网段判定；
+IPv6 的 `/128`、link-local、组播与回环地址直接跳过，后几类都是邻居发现之类的噪音。
 
 ### 本机地址不算设备
 
 netmon 只把「别的机器」当设备。启动时会枚举本机所有接口地址（LAN、WAN/PPPoE、
-podman/docker 网桥、tun，含 IPv6），源地址命中就不采集。
+podman/docker 网桥、tun，含 IPv6），源地址命中就不采集。IPv6 侧还会额外滤掉
+`::` / `::1`、link-local、组播，以及源和目的都在本机同一 v6 前缀内的 LAN 内互访。
 
 这条不是洁癖，是必须的：开了 tun 代理（sing-box / homeproxy）之后，同一份流量
 在 conntrack 里出现两次 —— 客户端发出一次、代理进程从 WAN 重新发出一次，
@@ -219,8 +273,8 @@ python3 build/build-apk.py --bin-dir build/out --arch mipsel_24kc --sdk sdk
 
 ```sh
 sh src/get-sqlite.sh        # 下载 SQLite amalgamation 并编成本机静态库
-cd src && make && make test # 89 项 C 断言
-cd .. && node build/render-test.js   # 126 项前端断言
+cd src && make && make test # 196 项 C 断言
+cd .. && node build/render-test.js   # 144 项前端断言
 ```
 
 ### 云端构建
@@ -255,7 +309,12 @@ config netmon 'main'
     option retain      '30'                         # 明细保留天数
     option interval    '5'                          # conntrack 采样间隔（秒）
     option loglevel    '0'                          # 1 = 输出 debug 级日志（等价 -v）
+    option dns_sniff_if 'br-lan'                    # br-lan / any
 ```
+
+`dns_sniff_if` 选 `any` 时 netmon 不绑定网卡、收全部网卡的帧，只在排查「某些
+查询抓不到」时用；代价是抓包量增加。这个 option 是 1.1.0 新增的，老配置缺省时
+init 脚本用 `br-lan` 兜底，不用手改。
 
 改完执行 `/usr/bin/netmon-apply` 生效（LuCI 保存时会自动调用）。这个脚本是幂等的：
 校验端口 → 建目录 → 重写 `uhttpd.netmon` 实例 → reload → 重启采集。
@@ -295,13 +354,17 @@ logread -e netmon | grep -v 'daemon\.info' # 排除正常信息
 ```sh
 netmon-report status                       # 库概况
 netmon-report devices --since 24h          # 设备清单
+netmon-report servers --since 24h          # DNS 服务器：查询量 / 平均耗时
+netmon-report dns --since 24h --fam 6      # 只看 IPv6 客户端的 DNS 质量
 netmon-report client --ip 192.168.1.100    # 单台设备详情
 netmon-report detail --type qname --key example.com
 netmon-report dashboard --since 1d -j      # 前端用的完整 JSON
 netmon-report cleanup-self --dry-run       # 清历史里的本机地址记录（见下）
 ```
 
-全部支持 `--since 1h|24h|7d` 与 `-j`（JSON）。
+全部支持 `--since 1h|24h|7d` 与 `-j`（JSON）。`top / trend / dns / devices`
+还支持 `--fam 4|6|all`（默认 all）；`dashboard` 接受该参数但始终返回全量数据，
+分栈信息看 `stack` 字段。
 
 ---
 
@@ -318,6 +381,8 @@ x86_64 软路由，24 小时窗口约 43 万条 DNS、20 万条连接：
 | 冷查询（首次聚合） | 约 4 s（每 10 秒窗口最多一次） |
 
 小 flash 机型把 `retain` 降到 3–7 天、页缓存调到 8 MB，RSS 可压到 25–30 MB。
+1.1.0 的 DNS 行多了服务器、端口、协议族、TTL 与应答 IP，单行多几十字节，
+库增速略有上升。
 优化过程（覆盖索引、10 秒窗口缓存、以及踩过的坑）见
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。
 
@@ -331,22 +396,24 @@ x86_64 软路由，24 小时窗口约 43 万条 DNS、20 万条连接：
  nf_conntrack ─────▶│  ├─ ctsample   5s 采样        │
                     │  ├─ ctparse    解析文本行      │
  AF_PACKET ────────▶│  ├─ dnssniff   udp/53 旁路    │──▶ SQLite
- (BPF: udp/53)      │  └─ dnsmap     域名反查        │    /opt/netmon/data
+ (BPF: udp/53)      │  │   v4/v6 客户端与服务器地址  │    /opt/netmon/data
+                    │  └─ dnsmap     A/AAAA 反查     │
                     └──────────────────────────────┘
                                    │
                     ┌──────────────▼───────────────┐
                     │  netmon-report （按需执行）   │
                     │  聚合 → JSON / 文本           │
+                    │  COALESCE(client_ip, src) 归属 │
                     └──────────────┬───────────────┘
                                    │
-        uhttpd ──▶ /cgi-bin/data ──┘        （10 秒窗口文件缓存）
-                └▶ /www/netmon/index.html   （单文件前端，6 套皮肤）
+        uhttpd ──▶ /cgi-bin/data ──┘        （10 秒窗口文件缓存，fam 进 key）
+                └▶ /www/netmon/index.html   （单文件前端，8 视图 + 6 套皮肤）
 ```
 
 **为什么用 C**：路由器上内存与 flash 都紧张，常驻进程要能连续跑几个月不涨内存。
 纯 C + 静态链接 SQLite，二进制 1.1 MB，无运行时依赖。
 
-**为什么前端不用框架**：面板只在局域网用，加载越快越好。单文件 145 KB，
+**为什么前端不用框架**：面板只在局域网用，加载越快越好。单文件约 162 KB，
 首次打开不需要等待任何外部资源。
 
 ## 目录
@@ -365,8 +432,8 @@ screenshots/    README 用图（由脱敏数据渲染）
 几个值得一提的开发工具：
 
 ```sh
-node build/render-test.js      # 126 项前端断言，不开浏览器（DOM 桩真实执行 JS）
-cd src && make test            # 89 项 C 单元断言（conntrack 解析 / DNS 嗅探 / 域名反查）
+node build/render-test.js      # 145 项前端断言，不开浏览器（DOM 桩真实执行 JS）
+cd src && make test            # 196 项 C 单元断言（conntrack 解析 / DNS 嗅探 / 域名反查 / 数据库迁移）
 python3 build/check-web.py     # 前端体积 / 外链依赖 / 内联检查
 python3 build/make-demo.py     # 从真实数据生成**脱敏**演示页
 ```
@@ -379,8 +446,15 @@ python3 build/make-demo.py     # 从真实数据生成**脱敏**演示页
 
 - 只看 DNS（udp/53 明文）。DoH / DoT 客户端在 netmon 眼里是「没有 DNS 行为」，
   这是被动旁路的固有限制，不做 TLS 解密。
+- **不做缓存命中率。** 被动旁路读不到 dnsmasq 内部缓存表，也没有解析器自报的
+  hit / miss 计数。用「是否观测到上游转发 + 应答时延 + TTL 衰减」能猜，但在 DNS
+  被代理接管或上游走 DoH / DoT 时判定覆盖率不到 2%，猜出来的数字会误导人，
+  所以这一版只报可观测的事实：查询发给了谁、耗时多少、TTL 与应答 IP。
+- IPv4 与 IPv6 都支持：DNS 事件带完整的 16 字节客户端 / 服务器地址，
+  AAAA 应答参与域名反查，连接按 LAN 侧地址归属设备，入向连接会归一上下行。
+  不解析隧道内层；IPv6 嗅探固定按 40 字节基础头取 UDP 端口，不跟随扩展头，
+  也不识别带 802.1Q VLAN 标签的帧（DNS 正常不走这些路径，少收的帧不影响转发）。
 - 流量来自 conntrack 字节差，采样间隔内的短连接可能被合并统计，不是精确计费。
-- 只处理 IPv4/IPv6 单播，不解析隧道内层。
 - 面板无鉴权，仅限内网。
 
 ## 许可

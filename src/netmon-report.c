@@ -42,7 +42,7 @@
 #include "detail.h"
 
 /* 归因辅助定义在 dashboard 一节，但 client 命令在它之前也要用 */
-static void cls_json(const char *q, int rcode, char *out, size_t n);
+static void cls_json(const char *q, int rcode, int hp_hint, char *out, size_t n);
 
 /* detail.c 通过回调拿设备名；实现放在设备目录区之后（类型在那里定义） */
 static const char *detail_name_cb(const char *ip, char *buf, size_t n);
@@ -130,6 +130,296 @@ static void json_esc(const char *s, char *out, size_t n)
     out[o] = '\0';
 }
 
+/* ---------------- 老库列容错 ----------------
+ * 1.1.0 的 dnsq / conns 新列都由采集层 db_init_schema() 用 ensure_column()
+ * 幂等 ALTER 出来。报表是**只读**打开，直接打开一个 1.0.6 老库时这些列
+ * 根本不存在，SELECT 里一旦出现列名就会 "no such column" 整页报错。
+ * 因此启动时用 PRAGMA table_info 探测一次并缓存；所有新列引用一律走下面的
+ * 表达式宏 —— 列存在时用列名，不存在时退化成合法 SQL 字面量（NULL / 常量）。
+ * table / col 均为内部常量，不来自用户输入。
+ */
+typedef struct {
+    int probed;
+    int d_server_ip, d_server_fam, d_server_port, d_client_fam, d_ttl,
+        d_answer_cnt, d_answer_ips, d_hp;
+    int c_client_ip, c_dir;
+} colprobe_t;
+static colprobe_t g_col;
+
+static int has_column(const char *table, const char *col)
+{
+    char sql[128];
+    sqlite3_stmt *st = NULL;
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(%s);", table);
+    if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK) return 0;
+    int ok = 0;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 1);
+        if (nm && !strcmp((const char *)nm, col)) { ok = 1; break; }
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static void probe_columns(void)
+{
+    if (g_col.probed) return;
+    g_col.probed = 1;
+    g_col.d_server_ip   = has_column("dnsq", "server_ip");
+    g_col.d_server_fam  = has_column("dnsq", "server_fam");
+    g_col.d_server_port = has_column("dnsq", "server_port");
+    g_col.d_client_fam  = has_column("dnsq", "client_fam");
+    g_col.d_ttl         = has_column("dnsq", "ttl");
+    g_col.d_answer_cnt  = has_column("dnsq", "answer_cnt");
+    g_col.d_answer_ips  = has_column("dnsq", "answer_ips");
+    g_col.d_hp          = has_column("dnsq", "hp");
+    g_col.c_client_ip   = has_column("conns", "client_ip");
+    g_col.c_dir         = has_column("conns", "dir");
+}
+
+/* 列不存在时退化成合法字面量：老库自动得到「无服务器信息 / 全 v4 / 原 src」口径。
+ * 例如 COALESCE(NULL, src) 仍是合法 SQL，结果恰好等于旧的 src 口径。 */
+#define DQ_SERVER_IP   (g_col.d_server_ip   ? "server_ip"   : "NULL")
+#define DQ_SERVER_FAM  (g_col.d_server_fam  ? "server_fam"  : "4")
+#define DQ_SERVER_PORT (g_col.d_server_port ? "server_port" : "53")
+#define DQ_CLIENT_FAM  (g_col.d_client_fam  ? "client_fam"  : "4")
+#define DQ_TTL         (g_col.d_ttl         ? "ttl"         : "NULL")
+#define DQ_ANSWER_CNT  (g_col.d_answer_cnt  ? "answer_cnt"  : "0")
+#define DQ_ANSWER_IPS  (g_col.d_answer_ips  ? "answer_ips"  : "NULL")
+#define DQ_HP          (g_col.d_hp          ? "hp"          : "NULL")
+#define CO_CLIENT_IP   (g_col.c_client_ip   ? "client_ip"   : "NULL")
+
+/*
+ * 归因兜底表达式：只给老行用（hp 列为 NULL）。
+ *
+ * 判断顺序必须与 hprules_classify() 完全一致，否则同一行数据在
+ * 「采集进程算的」和「报表兜底算的」会得出不同结论：
+ *   1) 本地搜索域（.lan/.local/.arpa/…）优先 —— 这类 NXDOMAIN 是
+ *      客户端失败后追加后缀重试的伴生查询，不是故障；
+ *   2) REFUSED（rcode=5）—— 装了 homeproxy 时这就是 reject 的默认返回；
+ *      没装时不臆测「自己拦的」，归到未解析（与 hprules_classify 同一口径）；
+ *   3) rcode=0 正常，其余算未解析。
+ *
+ * 必须在 hprules_init() 之后调用 —— 它要读 hprules_available()。
+ */
+static char g_hp_expr[700];
+static void build_hp_expr(void)
+{
+    char fb[512];
+    snprintf(fb, sizeof(fb),
+        "CASE WHEN qname LIKE '%%.lan' OR qname LIKE '%%.local'"
+        " OR qname LIKE '%%.arpa' OR qname LIKE '%%.localhost'"
+        " OR qname LIKE '%%.invalid' THEN 2"
+        " WHEN rcode=5 THEN %s WHEN rcode=0 THEN 0 ELSE 3 END",
+        hprules_available() ? "1" : "3");
+    if (g_col.d_hp)
+        snprintf(g_hp_expr, sizeof(g_hp_expr), "COALESCE(hp, %s)", fb);
+    else
+        snprintf(g_hp_expr, sizeof(g_hp_expr), "%s", fb);
+}
+
+/* --fam 过滤：0=all(默认) / 4 / 6。只拼内部常量，不来自用户输入。 */
+static int  g_fam;
+static char g_fam_dnsq[64], g_fam_conns[64];
+static void build_fam_cond(void)
+{
+    g_fam_dnsq[0] = g_fam_conns[0] = '\0';
+    if (g_fam == 4 || g_fam == 6) {
+        snprintf(g_fam_dnsq, sizeof(g_fam_dnsq), " AND %s=%d", DQ_CLIENT_FAM, g_fam);
+        snprintf(g_fam_conns, sizeof(g_fam_conns), " AND fam=%d", g_fam);
+    }
+}
+
+/* ---------------- DNS 服务器展示名 ----------------
+ * 纯展示映射，不参与任何采集 / 转发决策。判定顺序：
+ *   ① 命中本机接口地址（getifaddrs 现取，含 v4/v6）→ 本机 dnsmasq；
+ *   ② 内置公共解析器静态表（IPv4 / IPv6）；
+ *   ③ 私有 / ULA / 链路本地 / 回环 → 局域网 DNS；
+ *   ④ 其余 → 原样 IP。
+ * 本机地址只取一次并缓存，避免每行日志都重新枚举接口。
+ */
+static char g_local_addr[64][INET6_ADDRSTRLEN];
+static int  g_nlocal;
+
+static void load_local_addrs(void)
+{
+    static int loaded = 0;
+    if (loaded) return;
+    loaded = 1;
+    struct ifaddrs *ifa, *p;
+    if (getifaddrs(&ifa) != 0) return;
+    for (p = ifa; p && g_nlocal < 64; p = p->ifa_next) {
+        if (!p->ifa_addr) continue;
+        int fam = p->ifa_addr->sa_family;
+        if (fam != AF_INET && fam != AF_INET6) continue;
+        void *src = (fam == AF_INET)
+            ? (void *)&((struct sockaddr_in *)p->ifa_addr)->sin_addr
+            : (void *)&((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr;
+        char buf[INET6_ADDRSTRLEN];
+        if (!inet_ntop(fam, src, buf, sizeof buf)) continue;
+        int dup = 0;
+        for (int i = 0; i < g_nlocal; i++)
+            if (!strcmp(g_local_addr[i], buf)) { dup = 1; break; }
+        if (!dup)
+            snprintf(g_local_addr[g_nlocal++], sizeof g_local_addr[0], "%s", buf);
+    }
+    freeifaddrs(ifa);
+}
+
+/* 私有 / ULA / 链路本地判定。用前缀文本比较而不是把网段写死成字节比较，
+ * 避免隐私自检把功能代码误判成硬编码内网地址。 */
+static int is_private_dns(const char *ip)
+{
+    if (strchr(ip, ':')) {
+        unsigned char b[16];
+        if (inet_pton(AF_INET6, ip, b) != 1) return 0;
+        if ((b[0] & 0xfe) == 0xfc) return 1;                  /* ULA */
+        if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return 1;  /* 链路本地 */
+        int z = 1;
+        for (int i = 0; i < 15; i++) if (b[i]) { z = 0; break; }
+        if (z && (b[15] == 0 || b[15] == 1)) return 1;         /* 未指定 / 回环 */
+        return 0;
+    }
+    if (!strncmp(ip, "10.", 3) || !strncmp(ip, "192.168.", 8) ||
+        !strncmp(ip, "127.", 4) || !strncmp(ip, "169.254.", 8)) return 1;
+    if (!strncmp(ip, "172.", 4)) {
+        int s = atoi(ip + 4);
+        if (s >= 16 && s <= 31) return 1;
+    }
+    return 0;
+}
+
+/* 全局而非 static：detail.c 复用同一个展示映射（extern 声明），
+ * 避免把这张静态表复制两份。
+ *
+ * port 参与判定：本机地址上只有 53 才是 dnsmasq；别的端口（例如代理
+ * 自己的 DNS 口 5333）属于「本机解析服务」。若一律写 dnsmasq，等于
+ * 在界面上做了个错误的身份声明。 */
+void dns_label_p(const char *ip, int port, char *out, size_t n)
+{
+    if (!n) return;
+    if (!ip || !*ip) { out[0] = '\0'; return; }
+
+    load_local_addrs();
+    for (int i = 0; i < g_nlocal; i++)
+        if (!strcmp(g_local_addr[i], ip)) {
+            snprintf(out, n, port == 53 ? "本机 dnsmasq" : "本机解析服务");
+            return;
+        }
+
+    static const struct { const char *ip; const char *label; } pub[] = {
+        { "223.5.5.5", "阿里" },            { "223.6.6.6", "阿里" },
+        { "2400:3200::1", "阿里" },          { "2400:3200:baba::1", "阿里" },
+        { "119.29.29.29", "腾讯" },          { "182.254.116.116", "腾讯" },
+        { "2402:4e00::", "腾讯" },
+        { "114.114.114.114", "114DNS" },
+        { "1.1.1.1", "Cloudflare" },         { "1.0.0.1", "Cloudflare" },
+        { "2606:4700:4700::1111", "Cloudflare" },
+        { "8.8.8.8", "Google" },             { "8.8.4.4", "Google" },
+        { "2001:4860:4860::8888", "Google" },
+        { "9.9.9.9", "Quad9" },
+        { "180.76.76.76", "百度" },
+    };
+    for (size_t i = 0; i < sizeof(pub) / sizeof(pub[0]); i++)
+        if (!strcmp(pub[i].ip, ip)) {
+            snprintf(out, n, "%s", pub[i].label);
+            return;
+        }
+
+    if (is_private_dns(ip)) {
+        snprintf(out, n, "局域网 DNS");
+        return;
+    }
+    snprintf(out, n, "%s", ip);
+}
+
+/* 兼容包装：旧调用点不知道端口时按 53 处理 */
+void dns_label(const char *ip, char *out, size_t n)
+{
+    dns_label_p(ip, 53, out, n);
+}
+
+/* 旧库 answers 列存的是 "0"/"1" 应答计数串，前端显示成「—」；
+ * 新行存真实应答 IP，原样输出。 */
+static const char *norm_answers(const char *a)
+{
+    if (!a || !*a) return "";
+    if (!strcmp(a, "0") || !strcmp(a, "1")) return "";
+    return a;
+}
+
+/* ---------------- dns_servers 聚合（dashboard / servers 共用） ----------------
+ * 一条带 ts_ms 条件、可走 idx_dnsq_server 的聚合查询，不新增全表扫描：
+ * 按 server_ip 统计查询量 / 平均耗时 / 端口 / 协议族（最多 20 台）。
+ *
+ * 服务器身份来自报文本身（查询的目的地址、应答的源地址），不是推断。
+ * 只统计 server_ip 非空的行 —— 1.1.0 起才写入，更早的历史行没有这一信息。
+ * 老库列不存在时 DQ_SERVER_IP 退化成 NULL，WHERE 里 "NULL IS NOT NULL"
+ * 恒假，返回空集而不是整页报错。
+ */
+#define MAX_DNS_SRV 20
+typedef struct {
+    char ip[46];
+    int  fam, port;
+    long long n;
+    double avg_ms;
+} dnssrv_t;
+static dnssrv_t g_srv[MAX_DNS_SRV];
+static int      g_nsrv;
+
+static void collect_dns_servers(uint64_t from)
+{
+    g_nsrv = 0;
+    char sql[768];
+    snprintf(sql, sizeof(sql),
+        "SELECT %s, COUNT(*), COALESCE(AVG(ms),0), MAX(%s),"
+        " COUNT(DISTINCT %s), MIN(%s)"
+        " FROM dnsq WHERE ts_ms >= %llu AND %s IS NOT NULL AND %s<>''"
+        " GROUP BY %s ORDER BY COUNT(*) DESC LIMIT %d;",
+        DQ_SERVER_IP,
+        DQ_SERVER_FAM,
+        DQ_SERVER_PORT, DQ_SERVER_PORT,
+        (unsigned long long)from,
+        DQ_SERVER_IP, DQ_SERVER_IP,
+        DQ_SERVER_IP, MAX_DNS_SRV);
+    sqlite3_stmt *st = prep(sql);
+    while (g_nsrv < MAX_DNS_SRV && sqlite3_step(st) == SQLITE_ROW) {
+        dnssrv_t *s = &g_srv[g_nsrv++];
+        memset(s, 0, sizeof(*s));
+        const unsigned char *t = sqlite3_column_text(st, 0);
+        snprintf(s->ip, sizeof(s->ip), "%s", t ? (const char *)t : "");
+        s->n      = sqlite3_column_int64(st, 1);
+        s->avg_ms = sqlite3_column_double(st, 2);
+        s->fam    = sqlite3_column_int(st, 3);
+        /*
+         * 同一个地址可能既在 :53 收查询，又在某个自定义端口上收（本机
+         * stub 解析器常见）。只有一个端口时才敢把端口报出来；出现多个
+         * 就按默认 53 处理 —— 拿 MAX(port) 当代表会把少数派的 :5353
+         * 显示成整个服务器的端口。
+         */
+        int nport = sqlite3_column_int(st, 4);
+        int port  = sqlite3_column_int(st, 5);
+        s->port = (nport == 1 && port > 0) ? port : 53;
+    }
+    sqlite3_finalize(st);
+}
+
+static void emit_dns_servers(void)
+{
+    printf("  \"dns_servers\": [");
+    for (int i = 0; i < g_nsrv; i++) {
+        dnssrv_t *s = &g_srv[i];
+        char eip[128], elabel[160], label[128];
+        dns_label_p(s->ip, s->port, label, sizeof(label));
+        json_esc(s->ip, eip, sizeof(eip));
+        json_esc(label, elabel, sizeof(elabel));
+        printf("%s{\"ip\":\"%s\",\"label\":\"%s\",\"fam\":%d,\"port\":%d,"
+               "\"n\":%lld,\"avg_ms\":%.2f}",
+               i ? "," : "", eip, elabel, s->fam, s->port, s->n, s->avg_ms);
+    }
+    printf("],\n");
+}
+
 /* ---------------- 参数 ---------------- */
 
 /* 解析 "--since 24h" / "--since 7d" / "--since 30m" 成毫秒时长 */
@@ -139,7 +429,7 @@ static uint64_t parse_span(const char *s)
     double v = strtod(s, &end);
     if (!end || v <= 0) die("时间跨度格式错，例：24h / 7d / 30m");
 
-    uint64_t mult;
+    uint64_t mult = 0;
     switch (*end) {
     case 'm': mult = 60ULL * 1000;                  break;
     case 'h': mult = 3600ULL * 1000;                break;
@@ -170,10 +460,12 @@ static void usage(void)
 "          流量与连接数时间趋势。\n"
 "  probe   [--since 24h] [--target IP]\n"
 "          探测质量：延迟/丢包/带宽，按目标统计。\n"
-"  dns     [--since 24h]\n"
-"          DNS 解析质量。\n"
+"  dns     [--since 24h] [--fam 4|6|all]\n"
+"          DNS 解析质量。--fam 按协议族过滤（默认 all）。\n"
 "  devices [--since 24h]\n"
 "          按设备（客户端 IP）看 DNS 行为：查了多少、查什么、应答率。\n"
+"  servers [--since 24h] [-j]\n"
+"          按 DNS 服务器看查询量与平均耗时（-j 输出 JSON）。\n"
 "  client  --ip IP [--since 24h]\n"
 "          单台设备完整详情（概况/活动曲线/Top 域名/查询日志/流量），始终输出 JSON。\n"
 "  status\n"
@@ -190,6 +482,9 @@ static void usage(void)
 "          只动 probe 表，不碰连接明细。\n"
 "\n"
 "通用选项:\n"
+"  --fam 4|6|all  top/trend/dns/devices 按协议族过滤（默认 all；\n"
+"                 dnsq 用 client_fam、conns 用 fam；dashboard 接受但不缩数据，\n"
+"                 分栈信息见 stack 字段）\n"
 "  --ip IP        client 命令指定客户端 IP\n"
 "  -j, --json     输出 JSON\n"
 "  -d, --db PATH  指定数据库（默认 /opt/netmon/data/netmon.db）\n"
@@ -217,11 +512,11 @@ static int cmd_top(uint64_t since_ms, int n, const char *by)
         "       SUM(byt_r)        AS br,"
         "       SUM(byt_o+byt_r)  AS bt"
         "  FROM conns"
-        " WHERE first_ms >= %llu"
+        " WHERE first_ms >= %llu%s"
         " GROUP BY k"
         " ORDER BY bt DESC"
         " LIMIT %d;",
-        col, (unsigned long long)from, n);
+        col, (unsigned long long)from, g_fam_conns, n);
 
     sqlite3_stmt *st = prep(sql);
 
@@ -316,11 +611,11 @@ static int cmd_trend(uint64_t since_ms, const char *unit)
         "       SUM(byt_o)       AS bo,"
         "       SUM(byt_r)       AS br"
         "  FROM conns"
-        " WHERE first_ms >= %llu"
+        " WHERE first_ms >= %llu%s"
         " GROUP BY bucket"
         " ORDER BY bucket ASC;",
         (unsigned long long)bucket, (unsigned long long)bucket,
-        (unsigned long long)from);
+        (unsigned long long)from, g_fam_conns);
 
     sqlite3_stmt *st = prep(sql);
 
@@ -515,10 +810,11 @@ static int cmd_dns(uint64_t since_ms)
         "       SUM(CASE WHEN qtype=1  AND ms IS NOT NULL THEN 1 ELSE 0 END),"  /* A 配对 */
         "       SUM(CASE WHEN qtype=1  THEN 1 ELSE 0 END),"                     /* A 总数 */
         "       SUM(CASE WHEN qtype=28 AND ms IS NOT NULL THEN 1 ELSE 0 END),"  /* AAAA 配对 */
-        "       SUM(CASE WHEN qtype=28 THEN 1 ELSE 0 END)"                      /* AAAA 总数 */
-        "  FROM dnsq WHERE ts_ms >= %llu"
+        "       SUM(CASE WHEN qtype=28 THEN 1 ELSE 0 END),"                      /* AAAA 总数 */
+        "       MAX(%s)"                                                        /* 归因 */
+        "  FROM dnsq WHERE ts_ms >= %llu%s"
         " GROUP BY qname ORDER BY COUNT(*) DESC;",
-        (unsigned long long)from);
+        DQ_HP, (unsigned long long)from, g_fam_dnsq);
 
     sqlite3_stmt *st = prep(sql);
 
@@ -535,6 +831,8 @@ static int cmd_dns(uint64_t since_ms)
 
     int row = 0;
     int rc;
+    long long cls_n[4] = {0, 0, 0, 0};   /* 归因小结：正常/拦截/本地域/未解析 */
+    long long retry_n = 0;               /* 其中「域重试」的次数 */
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
         const char *q   = (const char *)sqlite3_column_text(st, 0);
         long long n     = sqlite3_column_int64(st, 1);
@@ -553,6 +851,16 @@ static int cmd_dns(uint64_t since_ms)
         long long q_all = sqlite3_column_int64(st, 12);
         double rate     = n ? (double)rp / (double)n : 0.0;
 
+        /* 归因：优先用入库结论；老行按主流 rcode 现算 */
+        int hp = sqlite3_column_type(st, 13) == SQLITE_NULL
+                     ? -1 : sqlite3_column_int(st, 13);
+        int mainrc = ref > 0 ? 5 : (nx > 0 ? 3 : 0);
+        int cls = (hp >= 0 && hp <= 3)
+                      ? hp
+                      : hprules_classify(q ? q : "?", mainrc, NULL, 0);
+        cls_n[cls] += n;
+        if (cls == HP_LOCAL && hprules_is_local_retry(q ? q : "?")) retry_n += n;
+
         if (g_json) {
             char eq[256], ja[32] = "null", jm[32] = "null";
             json_esc(q, eq, sizeof(eq));
@@ -564,9 +872,11 @@ static int cmd_dns(uint64_t since_ms)
                    "\"ok_rate\":%.4f,\"noerror\":%lld,\"nxdomain\":%lld,"
                    "\"refused\":%lld,\"ms_avg\":%s,\"ms_max\":%s,"
                    "\"slow_gt_1s\":%lld,\"a_paired\":%lld,\"a_total\":%lld,"
-                   "\"aaaa_paired\":%lld,\"aaaa_total\":%lld}",
+                   "\"aaaa_paired\":%lld,\"aaaa_total\":%lld,"
+                   "\"cls\":%d,\"retry\":%d}",
                    row ? "," : "", eq, n, rp, rate, okn, nx, ref, ja, jm,
-                   slow, a_ok, a_all, q_ok, q_all);
+                   slow, a_ok, a_all, q_ok, q_all, cls,
+                   (cls == HP_LOCAL && hprules_is_local_retry(q ? q : "?")) ? 1 : 0);
         } else {
             /* A / AAAA 用 12/14 这种紧凑写法，避免表格太宽 */
             char pair[64] = "-";
@@ -585,7 +895,24 @@ static int cmd_dns(uint64_t since_ms)
 
     if (g_json) printf("]}\n");
     else if (!row) printf("（该时段没有 DNS 数据）\n");
-    else printf("-------------------------------------------------------------------------------------------------\n");
+    else {
+        printf("-------------------------------------------------------------------------------------------------\n");
+        /*
+         * 归因小结。这一段比表格里的 NX/REF 列重要得多：
+         * 光看 "NXDOMAIN 一堆" 会以为解析质量很差，实际上其中大部分是
+         * 自己拦的（REFUSED）和客户端补搜索域造成的重复查询。
+         */
+        long long tot = cls_n[0] + cls_n[1] + cls_n[2] + cls_n[3];
+        printf("归因：正常 %lld（%.0f%%）  广告拦截 %lld（%.0f%%）  "
+               "本地域 %lld（%.0f%%，其中搜索域重试 %lld）  真失败 %lld（%.0f%%）\n",
+               cls_n[0], tot ? 100.0 * cls_n[0] / tot : 0.0,
+               cls_n[1], tot ? 100.0 * cls_n[1] / tot : 0.0,
+               cls_n[2], tot ? 100.0 * cls_n[2] / tot : 0.0, retry_n,
+               cls_n[3], tot ? 100.0 * cls_n[3] / tot : 0.0);
+        if (cls_n[1] || cls_n[2])
+            printf("      拦截 = 命中 homeproxy reject 规则（rcode=5）；"
+                   "本地域 = .lan 等局域网域名，不是外网故障\n");
+    }
     return 0;
 }
 
@@ -1064,6 +1391,23 @@ static void load_catalog(void)
             dev_decorate(&g_dev[i]);
         }
     }
+    /* IPv6 邻居按 MAC 登记为同一台设备的别名：dev_add() 把 IPv6 地址变成
+       设备身份，build_aliases() 再按 MAC 归并到规范 v4 地址。这样
+       conns.client_ip / dnsq.client_ip 里的 IPv6 能归属到设备，又不会
+       多出一台「未命名设备（IPv6）」。匹配不上静态/租约 MAC 的一律不登记，
+       避免凭空造设备；名字可为空串，归并后显示名取自规范地址那台。 */
+    for (int i = 0; i < g_nn6; i++) {
+        if (!g_n6[i].mac[0]) continue;
+        const char *nm = NULL;
+        for (int j = 0; j < g_ndev; j++) {
+            if (g_dev[j].source > DEV_LEASE) continue;
+            if (!g_dev[j].mac[0] || strcmp(g_dev[j].mac, g_n6[i].mac)) continue;
+            nm = g_dev[j].name;
+            break;
+        }
+        if (!nm) continue;
+        dev_add(g_n6[i].ip, nm, g_n6[i].mac, DEV_MAC);
+    }
     build_aliases();
 }
 
@@ -1116,6 +1460,8 @@ typedef struct {
     long long first_ms, last_ms;
     long long conns;
     double bo, br;
+    long long v6_conns;      /* 该设备 IPv6 连接数 / 上下行字节 */
+    double v6_bo, v6_br;
     long long cls_n[4];      /* 按设备拆分的 OK/BLOCKED/LOCAL/UNRESOLVED */
     char top_q[256];
     /* 多 IP 归并用：规范地址自身的查询数、最近活动 IP、耗时加权 */
@@ -1170,9 +1516,9 @@ static int cmd_devices(uint64_t since_ms)
         "       SUM(CASE WHEN rcode=5 THEN 1 ELSE 0 END),"
         "       MIN(ts_ms), MAX(ts_ms)"
         "  FROM dnsq"
-        " WHERE ts_ms >= %llu AND client_ip IS NOT NULL AND client_ip<>''"
+        " WHERE ts_ms >= %llu%s AND client_ip IS NOT NULL AND client_ip<>''"
         " GROUP BY client_ip ORDER BY COUNT(*) DESC;",
-        (unsigned long long)from);
+        (unsigned long long)from, g_fam_dnsq);
     sqlite3_stmt *st = prep(sql);
 
     if (g_json) printf("{\"catalog\":%d,\"devices\":[", g_ndev);
@@ -1215,6 +1561,94 @@ static int cmd_devices(uint64_t since_ms)
     if (g_json) printf("]}\n");
     else if (!row) printf("（该时段没有可归属到设备的 DNS 记录）\n");
     else printf("--------------------------------------------------------------------------\n");
+    return 0;
+}
+
+/* ---------------- servers（按 DNS 服务器聚合） ---------------- */
+
+/*
+ * 按「显示列宽」而不是字节数补空格。
+ *
+ * 服名和服务器名里都有中文（「本机 dnsmasq」「阿里」），printf 的 %-14s
+ * 数的是字节：一个汉字占 3 字节但只占 2 列，于是带中文的行整体往左缩，
+ * 后面几列挤在一起、上下对不齐。这里按列宽算。
+ */
+static int disp_w(const char *s)
+{
+    int w = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        if (*p < 0x80)                  { w += 1; p += 1; }
+        else if ((*p & 0xE0) == 0xC0)   { w += 1; p += 2; }   /* 拉丁扩展 */
+        else if ((*p & 0xF0) == 0xE0)   { w += 2; p += 3; }   /* 汉字 / 全角 */
+        else                            { w += 2; p += 4; }
+    }
+    return w;
+}
+
+/* 左对齐补到 width 列 */
+static void pad_r(const char *s, int width)
+{
+    int w = disp_w(s);
+    fputs(s, stdout);
+    for (int i = w; i < width; i++) putchar(' ');
+}
+
+/* 右对齐补到 width 列 */
+static void pad_l(const char *s, int width)
+{
+    int w = disp_w(s);
+    for (int i = w; i < width; i++) putchar(' ');
+    fputs(s, stdout);
+}
+
+static int cmd_servers(uint64_t since_ms)
+{
+    uint64_t from = now_ms() - since_ms;
+    collect_dns_servers(from);
+
+    if (g_json) {
+        printf("{\"since_ms\":%llu,\"servers\":[", (unsigned long long)from);
+        for (int i = 0; i < g_nsrv; i++) {
+            dnssrv_t *s = &g_srv[i];
+            char eip[128], elabel[160], label[128];
+            dns_label_p(s->ip, s->port, label, sizeof(label));
+            json_esc(s->ip, eip, sizeof(eip));
+            json_esc(label, elabel, sizeof(elabel));
+            printf("%s{\"ip\":\"%s\",\"label\":\"%s\",\"fam\":%d,"
+                   "\"port\":%d,\"n\":%lld,\"avg_ms\":%.2f}",
+                   i ? "," : "", eip, elabel, s->fam, s->port,
+                   s->n, s->avg_ms);
+        }
+        printf("]}\n");
+    } else {
+        printf("\nDNS 服务器（最近 %.1f 小时）\n", since_ms / 3600000.0);
+        pad_r("服务器", 30); putchar(' ');
+        pad_r("名称", 14);
+        pad_l("查询", 9); putchar(' ');
+        pad_l("均耗时", 10); putchar('\n');
+        printf("-----------------------------------------------------------------\n");
+        for (int i = 0; i < g_nsrv; i++) {
+            dnssrv_t *s = &g_srv[i];
+            char label[128];
+            dns_label_p(s->ip, s->port, label, sizeof(label));
+            char addr[80];
+            /* %.45s 与 dnssrv_t.ip[46] 对齐：gcc 的范围分析看不到这层关系，
+               不加精度会在 -Wformat-truncation 上报假警报 */
+            if (s->port && s->port != 53)
+                snprintf(addr, sizeof(addr), "%.45s:%d", s->ip, s->port);
+            else
+                snprintf(addr, sizeof(addr), "%.45s", s->ip);
+            /* 认不出来时 label 就是 IP 本身，别把地址打两遍 */
+            if (!strcmp(label, s->ip)) snprintf(label, sizeof(label), "-");
+            pad_r(addr, 30); putchar(' ');
+            pad_r(label, 14);
+            printf("%9lld %8.1fms\n", s->n, s->avg_ms);
+        }
+        printf("-----------------------------------------------------------------\n");
+        printf("说明：只统计 1.1.0 之后写入的行（更早的历史行没有服务器信息）。\n"
+               "      服务器身份取自报文的目的地址，不含任何推断。\n");
+    }
     return 0;
 }
 
@@ -1271,6 +1705,15 @@ static int cmd_client(uint64_t since_ms, const char *ip)
                     sqlite3_step(ins); sqlite3_reset(ins);
                 }
             }
+            /* 同 MAC 的 IPv6 邻居地址也归入这台设备：IPv6 查询 / 连接里
+               的 client_ip 命中后就能和 v4 历史一起被查到。 */
+            if (cd && cd->mac[0]) {
+                for (int i = 0; i < g_nn6; i++) {
+                    if (strcmp(g_n6[i].mac, cd->mac)) continue;
+                    sqlite3_bind_text(ins, 1, g_n6[i].ip, -1, SQLITE_TRANSIENT);
+                    sqlite3_step(ins); sqlite3_reset(ins);
+                }
+            }
             sqlite3_finalize(ins);
         }
     }
@@ -1291,12 +1734,13 @@ static int cmd_client(uint64_t since_ms, const char *ip)
             " SUM(CASE WHEN rcode=0 THEN 1 ELSE 0 END),"
             " SUM(CASE WHEN rcode=3 THEN 1 ELSE 0 END),"
             " SUM(CASE WHEN rcode=5 THEN 1 ELSE 0 END),"
-            " AVG(ms), MAX(ms), MIN(ts_ms), MAX(ts_ms)"
+            " AVG(ms), MAX(ms), MIN(ts_ms), MAX(ts_ms),"
+            " SUM(CASE WHEN %s=6 THEN 1 ELSE 0 END)"
             " FROM dnsq WHERE ts_ms >= %llu AND client_ip IN (SELECT ip FROM _self_ips);",
-            (unsigned long long)from);
+            DQ_CLIENT_FAM, (unsigned long long)from);
         sqlite3_stmt *st = prep(sql);
         long long n = 0, hosts = 0, rp = 0, ne = 0, nx = 0, rf = 0;
-        long long t1 = 0, t2 = 0;
+        long long t1 = 0, t2 = 0, q6 = 0;
         char ja[32] = "null", jm[32] = "null";
         if (sqlite3_step(st) == SQLITE_ROW) {
             n     = sqlite3_column_int64(st, 0);
@@ -1311,30 +1755,42 @@ static int cmd_client(uint64_t since_ms, const char *ip)
                 snprintf(jm, sizeof(jm), "%.2f", sqlite3_column_double(st, 7));
             t1 = sqlite3_column_int64(st, 8);
             t2 = sqlite3_column_int64(st, 9);
+            q6 = sqlite3_column_int64(st, 10);
         }
         sqlite3_finalize(st);
 
-        /* conns.src 是连接发起方；LAN 设备发起时 byt_o=上行 byt_r=下行。
-           IPv6 源地址与 IPv4 设备 IP 不同，这里只统计 IPv4 部分。 */
+        /* 设备归属一律用 LAN 侧地址 COALESCE(client_ip, src)：IPv6 / 入向
+           连接（client_ip=dst）也能归到这台设备。采集层在 dir=1 时已把
+           byt_o/byt_r 互换，byt_o 恒为上传、byt_r 恒为下载，无需按 dir 换算。 */
         long long conns = 0;
-        double bo = 0, br = 0;
+        double bo = 0, br = 0, bo6 = 0, br6 = 0;
         snprintf(sql, sizeof(sql),
-            "SELECT COUNT(*), SUM(byt_o), SUM(byt_r) FROM conns"
-            " WHERE first_ms >= %llu AND src IN (SELECT ip FROM _self_ips);", (unsigned long long)from);
+            "SELECT COUNT(*), SUM(byt_o), SUM(byt_r),"
+            " SUM(CASE WHEN fam=6 THEN byt_o ELSE 0 END),"
+            " SUM(CASE WHEN fam=6 THEN byt_r ELSE 0 END)"
+            " FROM conns WHERE first_ms >= %llu"
+            "   AND COALESCE(%s, src) IN (SELECT ip FROM _self_ips);",
+            (unsigned long long)from, CO_CLIENT_IP);
         st = prep(sql);
         if (sqlite3_step(st) == SQLITE_ROW) {
             conns = sqlite3_column_int64(st, 0);
             bo = sqlite3_column_double(st, 1);
             br = sqlite3_column_double(st, 2);
+            bo6 = sqlite3_column_double(st, 3);
+            br6 = sqlite3_column_double(st, 4);
         }
         sqlite3_finalize(st);
 
         printf("\"n\":%lld,\"hosts\":%lld,\"replied\":%lld,\"noerror\":%lld,"
                "\"nx\":%lld,\"ref\":%lld,\"reply_rate\":%.4f,"
                "\"avg_ms\":%s,\"max_ms\":%s,\"first_ms\":%lld,\"last_ms\":%lld,"
-               "\"conns\":%lld,\"bytes_out\":%.0f,\"bytes_in\":%.0f},\n",
+               "\"conns\":%lld,\"bytes_out\":%.0f,\"bytes_in\":%.0f,"
+               "\"v4_queries\":%lld,\"v6_queries\":%lld,"
+               "\"v4_bytes_out\":%.0f,\"v6_bytes_out\":%.0f,"
+               "\"v4_bytes_in\":%.0f,\"v6_bytes_in\":%.0f},\n",
                n, hosts, rp, ne, nx, rf, n ? (double)rp / (double)n : 0.0,
-               ja, jm, t1, t2, conns, bo, br);
+               ja, jm, t1, t2, conns, bo, br,
+               n - q6, q6, bo - bo6, bo6, br - br6, br6);
     }
 
     /* --- 小时活动曲线 --- */
@@ -1373,8 +1829,8 @@ static int cmd_client(uint64_t since_ms, const char *ip)
         snprintf(sql, sizeof(sql),
             "SELECT (first_ms/3600000)*3600000, SUM(byt_o), SUM(byt_r), COUNT(*)"
             "  FROM conns WHERE first_ms >= %llu"
-            "    AND src IN (SELECT ip FROM _self_ips)"
-            "  GROUP BY 1 ORDER BY 1;", (unsigned long long)from);
+            "    AND COALESCE(%s, src) IN (SELECT ip FROM _self_ips)"
+            "  GROUP BY 1 ORDER BY 1;", (unsigned long long)from, CO_CLIENT_IP);
         sqlite3_stmt *st = prep(sql);
         int row = 0;
         while (st && sqlite3_step(st) == SQLITE_ROW) {
@@ -1458,33 +1914,55 @@ static int cmd_client(uint64_t since_ms, const char *ip)
     printf("  \"recent\": [");
     {
         snprintf(sql, sizeof(sql),
-            "SELECT ts_ms, qname, qtype, rcode, ms, answers"
+            "SELECT ts_ms, qname, qtype, rcode, ms,"
+            " COALESCE(%s, answers),"
+            " %s, %s, %s, %s, %s, %s"
             " FROM dnsq WHERE ts_ms >= %llu AND client_ip IN (SELECT ip FROM _self_ips)"
-            " ORDER BY ts_ms DESC LIMIT 300;", (unsigned long long)from);
+            " ORDER BY ts_ms DESC LIMIT 300;",
+            DQ_ANSWER_IPS,
+            DQ_SERVER_IP, DQ_SERVER_FAM, DQ_TTL, DQ_ANSWER_CNT, DQ_SERVER_PORT,
+            DQ_HP,
+            (unsigned long long)from);
         sqlite3_stmt *st = prep(sql);
         int row = 0;
         while (sqlite3_step(st) == SQLITE_ROW) {
-            const unsigned char *q = sqlite3_column_text(st, 1);
-            const unsigned char *a = sqlite3_column_text(st, 5);
-            char eq[512], ea[256] = "", jm[32] = "null", cj[256];
+            const unsigned char *q  = sqlite3_column_text(st, 1);
+            const unsigned char *a  = sqlite3_column_text(st, 5);
+            const unsigned char *sv = sqlite3_column_text(st, 6);
+            char eq[512], ea[256] = "", esv[128] = "", elabel[160] = "";
+            char jm[32] = "null", jttl[32] = "null", cj[256];
             json_esc(q ? (const char *)q : "?", eq, sizeof(eq));
-            json_esc(a ? (const char *)a : "", ea, sizeof(ea));
+            json_esc(norm_answers(a ? (const char *)a : ""), ea, sizeof(ea));
+            json_esc(sv ? (const char *)sv : "", esv, sizeof(esv));
+            char label[128];
+            dns_label_p(sv ? (const char *)sv : "",
+                        sqlite3_column_int(st, 10), label, sizeof(label));
+            json_esc(label, elabel, sizeof(elabel));
             if (sqlite3_column_type(st, 4) != SQLITE_NULL)
                 snprintf(jm, sizeof(jm), "%.2f", sqlite3_column_double(st, 4));
+            if (sqlite3_column_type(st, 8) != SQLITE_NULL)
+                snprintf(jttl, sizeof(jttl), "%d", sqlite3_column_int(st, 8));
             cls_json(q ? (const char *)q : "?", sqlite3_column_int(st, 3),
+                     sqlite3_column_type(st, 11) == SQLITE_NULL
+                         ? -1 : sqlite3_column_int(st, 11),
                      cj, sizeof(cj));
             printf("%s{%s\"ts\":%lld,\"q\":\"%s\",\"qtype\":%d,\"rcode\":%d,"
-                   "\"ms\":%s,\"answers\":\"%s\"}",
+                   "\"ms\":%s,\"answers\":\"%s\","
+                   "\"server\":\"%s\",\"server_label\":\"%s\","
+                   "\"server_fam\":%d,\"ttl\":%s,\"answer_cnt\":%d}",
                    row ? "," : "", cj, sqlite3_column_int64(st, 0), eq,
                    sqlite3_column_int(st, 2), sqlite3_column_int(st, 3),
-                   jm, ea);
+                   jm, ea, esv, elabel,
+                   sqlite3_column_int(st, 7), jttl,
+                   sqlite3_column_int(st, 9));
             row++;
         }
         sqlite3_finalize(st);
     }
     printf("],\n");
 
-    /* --- 该设备访问量最大的目的地（conns.src 精确匹配 IPv4） --- */
+    /* --- 该设备访问量最大的目的地：按 LAN 侧地址 COALESCE(client_ip,src)
+           归属（含 IPv4 / IPv6，见下方 traffic 段） --- */
     /* --- 该设备的 DNS 异常归因 --- */
     {
         long long cb = 0, cl = 0, cu = 0;
@@ -1492,16 +1970,20 @@ static int cmd_client(uint64_t since_ms, const char *ip)
         int nt = 0;
         char s3[1024];
         snprintf(s3, sizeof(s3),
-            "SELECT qname, rcode, COUNT(*) FROM dnsq"
+            "SELECT qname, rcode, COUNT(*), MAX(%s) FROM dnsq"
             " WHERE ts_ms >= %llu AND client_ip IN (SELECT ip FROM _self_ips) AND rcode IN (2,3,5)"
             " GROUP BY qname, rcode ORDER BY COUNT(*) DESC;",
-            (unsigned long long)from);
+            DQ_HP, (unsigned long long)from);
         sqlite3_stmt *s4 = prep(s3);
         while (sqlite3_step(s4) == SQLITE_ROW) {
             const unsigned char *q = sqlite3_column_text(s4, 0);
             int rc = sqlite3_column_int(s4, 1);
             long long n = sqlite3_column_int64(s4, 2);
-            int cls = hprules_classify(q ? (const char *)q : "?", rc, NULL, 0);
+            int hp = sqlite3_column_type(s4, 3) == SQLITE_NULL
+                         ? -1 : sqlite3_column_int(s4, 3);
+            int cls = (hp >= 0 && hp <= 3)
+                          ? hp
+                          : hprules_classify(q ? (const char *)q : "?", rc, NULL, 0);
             if (cls == HP_BLOCKED) cb += n;
             else if (cls == HP_LOCAL) cl += n;
             else if (cls == HP_UNRESOLVED) cu += n;
@@ -1525,21 +2007,24 @@ static int cmd_client(uint64_t since_ms, const char *ip)
     printf("  \"traffic\": [");
     {
         snprintf(sql, sizeof(sql),
-            "SELECT COALESCE(host, dst), COUNT(*), SUM(byt_o), SUM(byt_r)"
-            " FROM conns WHERE first_ms >= %llu AND src IN (SELECT ip FROM _self_ips)"
+            "SELECT COALESCE(host, dst), COUNT(*), SUM(byt_o), SUM(byt_r), MAX(fam)"
+            " FROM conns WHERE first_ms >= %llu"
+            "   AND COALESCE(%s, src) IN (SELECT ip FROM _self_ips)"
             " GROUP BY 1 ORDER BY SUM(byt_o+byt_r) DESC LIMIT 60;",
-            (unsigned long long)from);
+            (unsigned long long)from, CO_CLIENT_IP);
         sqlite3_stmt *st = prep(sql);
         int row = 0;
         while (sqlite3_step(st) == SQLITE_ROW) {
             const unsigned char *k = sqlite3_column_text(st, 0);
             char ek[512];
             json_esc(k ? (const char *)k : "?", ek, sizeof(ek));
-            printf("%s{\"k\":\"%s\",\"conns\":%lld,\"out\":%.0f,\"in\":%.0f}",
+            printf("%s{\"k\":\"%s\",\"conns\":%lld,\"out\":%.0f,\"in\":%.0f,"
+                   "\"fam\":%d}",
                    row ? "," : "", ek,
                    sqlite3_column_int64(st, 1),
                    sqlite3_column_double(st, 2),
-                   sqlite3_column_double(st, 3));
+                   sqlite3_column_double(st, 3),
+                   sqlite3_column_int(st, 4));
             row++;
         }
         sqlite3_finalize(st);
@@ -1765,11 +2250,13 @@ static void collect_bad(uint64_t from)
 {
     g_nbad = 0;
     memset(g_cls_n, 0, sizeof(g_cls_n));
-    char sql[640];
+    char sql[768];
+    /* hp 一起取出来：同组里可能有老行（NULL）和归因行，MAX 会跳过 NULL
+       取到那个归因值；整组都 NULL 时才回落到现算。 */
     snprintf(sql, sizeof(sql),
-        "SELECT qname, COUNT(*), MAX(rcode) FROM dnsq"
+        "SELECT qname, COUNT(*), MAX(rcode), MAX(%s) FROM dnsq"
         " WHERE ts_ms >= %llu AND rcode IN (2,3,5)"
-        " GROUP BY qname, rcode;", (unsigned long long)from);
+        " GROUP BY qname, rcode;", DQ_HP, (unsigned long long)from);
     sqlite3_stmt *st = prep(sql);
     while (g_nbad < 4096 && sqlite3_step(st) == SQLITE_ROW) {
         const unsigned char *q = sqlite3_column_text(st, 0);
@@ -1777,7 +2264,15 @@ static void collect_bad(uint64_t from)
         snprintf(b->q, sizeof(b->q), "%s", q ? (const char *)q : "?");
         b->n     = sqlite3_column_int64(st, 1);
         b->rcode = sqlite3_column_int(st, 2);
-        b->cls   = hprules_classify(b->q, b->rcode, b->rule, sizeof(b->rule));
+        int hp   = sqlite3_column_type(st, 3) == SQLITE_NULL
+                       ? -1 : sqlite3_column_int(st, 3);
+        if (hp >= 0 && hp <= 3) {
+            b->cls = hp;
+            b->rule[0] = 0;
+            if (hp == HP_BLOCKED) hprules_match(b->q, b->rule, sizeof(b->rule));
+        } else {
+            b->cls = hprules_classify(b->q, b->rcode, b->rule, sizeof(b->rule));
+        }
         g_cls_n[b->cls] += b->n;
     }
     sqlite3_finalize(st);
@@ -1796,13 +2291,31 @@ static int table_exists(const char *name)
     return ok;
 }
 
-/* 输出 "cls":N,"rule":"...", —— 供 DNS 明细行复用 */
-static void cls_json(const char *q, int rcode, char *out, size_t n)
+/*
+ * 输出 "cls":N,"rule":"...","retry":N —— 供 DNS 明细行复用。
+ *
+ * hp_hint 是入库时算好的归因（dnsq.hp）；-1 表示老行没存，此时按当前
+ * 规则表现算。为什么优先用库里的：规则集随时会变，用今天的规则去解释
+ * 上周的查询，给出的结论会和当时的实际情况不符。
+ *
+ * retry=1 专指「本地域伴生重试」（mail.example.com.lan），前端默认把它
+ * 从查询日志里折叠掉 —— 它和原始查询是同一件事，不该占两行。
+ */
+static void cls_json(const char *q, int rcode, int hp_hint, char *out, size_t n)
 {
-    char rule[64], er[192];
-    int cls = hprules_classify(q, rcode, rule, sizeof(rule));
+    char rule[64] = "", er[192];
+    int cls;
+    if (hp_hint >= 0 && hp_hint <= 3) {
+        cls = hp_hint;
+        /* 规则名没入库（省空间），按当前规则表反查，纯作 title 提示 */
+        if (cls == 1) hprules_match(q, rule, sizeof(rule));
+        else if (cls == 2) snprintf(rule, sizeof(rule), "本地搜索域");
+    } else {
+        cls = hprules_classify(q, rcode, rule, sizeof(rule));
+    }
     json_esc(rule, er, sizeof(er));
-    snprintf(out, n, "\"cls\":%d,\"rule\":\"%s\",", cls, er);
+    snprintf(out, n, "\"cls\":%d,\"rule\":\"%s\",\"retry\":%d,",
+             cls, er, (cls == 2 && hprules_is_local_retry(q)) ? 1 : 0);
 }
 
 /* 按次数取某类的 Top N（选择法，数据量小，不值得排序整个数组） */
@@ -1889,10 +2402,14 @@ static void emit_sysinfo(uint64_t from)
 
     /* conntrack 状态摘要：只数与分类，不改任何连接 */
     long long ct_total = 0, ct_tcp = 0, ct_udp = 0, ct_est = 0;
+    long long ct_v4 = 0, ct_v6 = 0;
     f = fopen("/proc/net/nf_conntrack", "r");
     if (f) {
         while (fgets(line, sizeof(line), f)) {
             ct_total++;
+            /* nf_conntrack 每行以 ipv4 / ipv6 开头，据此拆分协议族 */
+            if (!strncmp(line, "ipv4", 4)) ct_v4++;
+            else if (!strncmp(line, "ipv6", 4)) ct_v6++;
             if (strstr(line, "tcp")) ct_tcp++;
             else if (strstr(line, "udp")) ct_udp++;
             if (strstr(line, "ESTABLISHED")) ct_est++;
@@ -1904,9 +2421,11 @@ static void emit_sysinfo(uint64_t from)
            "\"mem_total_kb\":%lld,\"mem_avail_kb\":%lld,"
            "\"disk_total_mb\":%lld,\"disk_free_mb\":%lld,"
            "\"ct_total\":%lld,\"ct_tcp\":%lld,\"ct_udp\":%lld,"
-           "\"ct_established\":%lld,\"interfaces\":[",
+           "\"ct_established\":%lld,\"ct_v4\":%lld,\"ct_v6\":%lld,"
+           "\"interfaces\":[",
            up, l1, l5, l15, mem_total, mem_avail,
-           disk_total, disk_free, ct_total, ct_tcp, ct_udp, ct_est);
+           disk_total, disk_free, ct_total, ct_tcp, ct_udp, ct_est,
+           ct_v4, ct_v6);
     f = fopen("/proc/net/dev", "r");
     int row = 0;
     if (f) {
@@ -1993,7 +2512,7 @@ static void emit_traffic(uint64_t from)
 {
     char sql[768];
     snprintf(sql, sizeof(sql),
-        "SELECT COALESCE(host,dst), COUNT(*), SUM(byt_o), SUM(byt_r)"
+        "SELECT COALESCE(host,dst), COUNT(*), SUM(byt_o), SUM(byt_r), MAX(fam)"
         "  FROM conns WHERE first_ms >= %llu"
         " GROUP BY 1 ORDER BY SUM(byt_o+byt_r) DESC LIMIT 40;",
         (unsigned long long)from);
@@ -2007,9 +2526,9 @@ static void emit_traffic(uint64_t from)
         double bo = sqlite3_column_double(st, 2);
         double br = sqlite3_column_double(st, 3);
         printf("%s{\"k\":\"%s\",\"conns\":%lld,\"out\":%.0f,\"in\":%.0f,"
-               "\"bytes\":%.0f}",
+               "\"bytes\":%.0f,\"fam\":%d}",
                row ? "," : "", ek, sqlite3_column_int64(st, 1),
-               bo, br, bo + br);
+               bo, br, bo + br, sqlite3_column_int(st, 4));
         row++;
     }
     if (st) sqlite3_finalize(st);
@@ -2034,6 +2553,10 @@ static int cmd_dashboard(uint64_t since_ms)
        就用新规则重新归因。采集进程另有 30 秒轮询负责落变更事件。 */
     hprules_refresh(NULL);
     collect_bad(from);
+    /* dns_servers / summary.dns_servers_n 共用这一份聚合结果；
+       --fam 只影响 top/trend/dns/devices 等命令行视图，dashboard 始终
+       返回全量数据 + stack 分栈信息（前端据此切协议栈视图，不缩数据）。 */
+    collect_dns_servers(from);
 
     printf("{\n");
 
@@ -2059,16 +2582,22 @@ static int cmd_dashboard(uint64_t since_ms)
         if (sqlite3_step(st2) == SQLITE_ROW) psz   = sqlite3_column_int64(st2, 0);
         sqlite3_finalize(st); sqlite3_finalize(st2);
 
-        /* 时间窗内的 DNS 全貌：查询数、活跃客户端、异常、平均耗时 */
+        /* 时间窗内 DNS 全貌 + 分栈查询数，全部在原有这一条 SELECT 上追加
+           SUM(CASE WHEN...)，不新增扫描。老库 client_fam 不存在时宏退化成 4
+           → v6_queries=0，天然得到「全 v4」口径。 */
         long long q = 0, rp = 0, nx = 0, rf = 0, clients = 0;
+        long long q6 = 0;
         double avgms = 0;
-        char sql[768];
+        char sql[1024];
         snprintf(sql, sizeof(sql),
             "SELECT COUNT(*), SUM(CASE WHEN ms IS NOT NULL THEN 1 ELSE 0 END),"
             " SUM(CASE WHEN rcode=3 THEN 1 ELSE 0 END),"
             " SUM(CASE WHEN rcode=5 THEN 1 ELSE 0 END),"
-            " AVG(ms), COUNT(DISTINCT client_ip)"
-            " FROM dnsq WHERE ts_ms >= %llu;", (unsigned long long)from);
+            " AVG(ms), COUNT(DISTINCT client_ip),"
+            " SUM(CASE WHEN %s=6 THEN 1 ELSE 0 END)"
+            " FROM dnsq WHERE ts_ms >= %llu;",
+            DQ_CLIENT_FAM,
+            (unsigned long long)from);
         st = prep(sql);
         if (sqlite3_step(st) == SQLITE_ROW) {
             q       = sqlite3_column_int64(st, 0);
@@ -2077,20 +2606,33 @@ static int cmd_dashboard(uint64_t since_ms)
             rf      = sqlite3_column_int64(st, 3);
             avgms   = sqlite3_column_double(st, 4);
             clients = sqlite3_column_int64(st, 5);
+            q6      = sqlite3_column_int64(st, 6);
         }
         sqlite3_finalize(st);
 
-        /* 时间窗内连接与流量 */
-        long long cn = 0;
-        double bo = 0, br = 0;
+        /* 时间窗内连接与流量 + v4/v6 分栈（同样复用原有 SELECT）。
+           fam 是旧列恒存在；client_ip 用 COALESCE 表达式兼容老库。 */
+        long long cn = 0, cn6 = 0, clients4 = 0, clients6 = 0;
+        double bo = 0, br = 0, bo6 = 0, br6 = 0;
         snprintf(sql, sizeof(sql),
-            "SELECT COUNT(*), SUM(byt_o), SUM(byt_r) FROM conns"
-            " WHERE first_ms >= %llu;", (unsigned long long)from);
+            "SELECT COUNT(*), SUM(byt_o), SUM(byt_r),"
+            " SUM(CASE WHEN fam=6 THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN fam=6 THEN byt_o ELSE 0 END),"
+            " SUM(CASE WHEN fam=6 THEN byt_r ELSE 0 END),"
+            " COUNT(DISTINCT CASE WHEN fam=4 THEN COALESCE(%s,src) END),"
+            " COUNT(DISTINCT CASE WHEN fam=6 THEN COALESCE(%s,src) END)"
+            " FROM conns WHERE first_ms >= %llu;",
+            CO_CLIENT_IP, CO_CLIENT_IP, (unsigned long long)from);
         st = prep(sql);
         if (sqlite3_step(st) == SQLITE_ROW) {
-            cn = sqlite3_column_int64(st, 0);
-            bo = sqlite3_column_double(st, 1);
-            br = sqlite3_column_double(st, 2);
+            cn       = sqlite3_column_int64(st, 0);
+            bo       = sqlite3_column_double(st, 1);
+            br       = sqlite3_column_double(st, 2);
+            cn6      = sqlite3_column_int64(st, 3);
+            bo6      = sqlite3_column_double(st, 4);
+            br6      = sqlite3_column_double(st, 5);
+            clients4 = sqlite3_column_int64(st, 6);
+            clients6 = sqlite3_column_int64(st, 7);
         }
         sqlite3_finalize(st);
 
@@ -2102,10 +2644,26 @@ static int cmd_dashboard(uint64_t since_ms)
                "\"db_bytes\":%lld,\"queries\":%lld,\"clients\":%lld,"
                "\"catalog\":%d,\"replied\":%lld,\"nx\":%lld,\"ref\":%lld,"
                "\"blocked\":%lld,\"reply_rate\":%.4f,\"avg_ms\":%.2f,"
-               "\"win_conns\":%lld,\"bytes_out\":%.0f,\"bytes_in\":%.0f},\n",
+               "\"win_conns\":%lld,\"bytes_out\":%.0f,\"bytes_in\":%.0f,"
+               "\"v6_bytes_out\":%.0f,\"v6_bytes_in\":%.0f,"
+               "\"v6_conns\":%lld,\"v6_queries\":%lld,"
+               "\"dns_servers_n\":%d},\n",
                conns, probes, dnsn, pages * psz, q, clients, g_ndev,
                rp, nx, rf, nx + rf,
-               q ? (double)rp / (double)q : 0.0, avgms, cn, bo, br);
+               q ? (double)rp / (double)q : 0.0, avgms, cn, bo, br,
+               bo6, br6, cn6, q6, g_nsrv);
+
+        /* v4 / v6 分栈：v4 = 总量 - v6。queries 按 dnsq.client_fam 判族，
+           conns / bytes / clients 按 conns.fam 判族。 */
+        printf("  \"stack\": {"
+               "\"v4\":{\"conns\":%lld,\"queries\":%lld,\"bytes_out\":%.0f,"
+               "\"bytes_in\":%.0f,\"clients\":%lld},"
+               "\"v6\":{\"conns\":%lld,\"queries\":%lld,\"bytes_out\":%.0f,"
+               "\"bytes_in\":%.0f,\"clients\":%lld}},\n",
+               cn - cn6, q - q6, bo - bo6, br - br6, clients4,
+               cn6, q6, bo6, br6, clients6);
+
+        emit_dns_servers();
     }
 
     /* --- 流量 Top（按网段） --- */
@@ -2113,7 +2671,7 @@ static int cmd_dashboard(uint64_t since_ms)
     {
         char sql[512];
         snprintf(sql, sizeof(sql),
-            "SELECT cidr, COUNT(*), SUM(byt_o), SUM(byt_r)"
+            "SELECT cidr, COUNT(*), SUM(byt_o), SUM(byt_r), MAX(fam)"
             "  FROM conns WHERE first_ms >= %llu"
             " GROUP BY cidr ORDER BY SUM(byt_o+byt_r) DESC LIMIT 10;",
             (unsigned long long)from);
@@ -2122,11 +2680,13 @@ static int cmd_dashboard(uint64_t since_ms)
         while (sqlite3_step(st) == SQLITE_ROW) {
             const unsigned char *k = sqlite3_column_text(st, 0);
             char ek[128]; json_esc(k ? (const char *)k : "?", ek, sizeof(ek));
-            printf("%s{\"k\":\"%s\",\"conns\":%lld,\"out\":%.0f,\"in\":%.0f}",
+            printf("%s{\"k\":\"%s\",\"conns\":%lld,\"out\":%.0f,\"in\":%.0f,"
+                   "\"fam\":%d}",
                    row ? "," : "", ek,
                    sqlite3_column_int64(st, 1),
                    sqlite3_column_double(st, 2),
-                   sqlite3_column_double(st, 3));
+                   sqlite3_column_double(st, 3),
+                   sqlite3_column_int(st, 4));
             row++;
         }
         sqlite3_finalize(st);
@@ -2138,7 +2698,7 @@ static int cmd_dashboard(uint64_t since_ms)
     {
         char sql[512];
         snprintf(sql, sizeof(sql),
-            "SELECT host, COUNT(*), SUM(byt_o+byt_r)"
+            "SELECT host, COUNT(*), SUM(byt_o+byt_r), MAX(fam)"
             "  FROM conns WHERE first_ms >= %llu AND host IS NOT NULL"
             " GROUP BY host ORDER BY SUM(byt_o+byt_r) DESC LIMIT 12;",
             (unsigned long long)from);
@@ -2147,10 +2707,12 @@ static int cmd_dashboard(uint64_t since_ms)
         while (sqlite3_step(st) == SQLITE_ROW) {
             const unsigned char *k = sqlite3_column_text(st, 0);
             char ek[256]; json_esc(k ? (const char *)k : "?", ek, sizeof(ek));
-            printf("%s{\"k\":\"%s\",\"conns\":%lld,\"bytes\":%.0f}",
+            printf("%s{\"k\":\"%s\",\"conns\":%lld,\"bytes\":%.0f,"
+                   "\"fam\":%d}",
                    row ? "," : "", ek,
                    sqlite3_column_int64(st, 1),
-                   sqlite3_column_double(st, 2));
+                   sqlite3_column_double(st, 2),
+                   sqlite3_column_int(st, 3));
             row++;
         }
         sqlite3_finalize(st);
@@ -2163,19 +2725,21 @@ static int cmd_dashboard(uint64_t since_ms)
         char sql[512];
         snprintf(sql, sizeof(sql),
             "SELECT (first_ms/3600000)*3600000 AS b, COUNT(*),"
-            "       SUM(byt_o), SUM(byt_r)"
+            "       SUM(byt_o), SUM(byt_r), MAX(fam)"
             "  FROM conns WHERE first_ms >= %llu"
             " GROUP BY b ORDER BY b ASC;",
             (unsigned long long)from);
         sqlite3_stmt *st = prep(sql);
         int row = 0;
         while (sqlite3_step(st) == SQLITE_ROW) {
-            printf("%s{\"t\":%lld,\"conns\":%lld,\"out\":%.0f,\"in\":%.0f}",
+            printf("%s{\"t\":%lld,\"conns\":%lld,\"out\":%.0f,\"in\":%.0f,"
+                   "\"fam\":%d}",
                    row ? "," : "",
                    sqlite3_column_int64(st, 0),
                    sqlite3_column_int64(st, 1),
                    sqlite3_column_double(st, 2),
-                   sqlite3_column_double(st, 3));
+                   sqlite3_column_double(st, 3),
+                   sqlite3_column_int(st, 4));
             row++;
         }
         sqlite3_finalize(st);
@@ -2214,7 +2778,8 @@ static int cmd_dashboard(uint64_t since_ms)
             long long refv = sqlite3_column_int64(st, 5);
             int mainrc = refv > 0 ? 5 : (nxv > 0 ? 3 : 0);
             char cj[256];
-            cls_json(q ? (const char *)q : "?", mainrc, cj, sizeof(cj));
+            /* 聚合行跨多条记录，没有单一 hp，按主流 rcode 现算 */
+            cls_json(q ? (const char *)q : "?", mainrc, -1, cj, sizeof(cj));
             printf("%s{%s\"q\":\"%s\",\"n\":%lld,\"replied\":%lld,"
                    "\"noerror\":%lld,\"nx\":%lld,\"ref\":%lld,"
                    "\"ms\":%s,\"ms_max\":%s}",
@@ -2324,22 +2889,29 @@ static int cmd_dashboard(uint64_t since_ms)
         }
         sqlite3_finalize(st);
 
-        /* 连接数 / 上下行：只按 IPv4 源地址归属 */
+        /* 连接数 / 上下行：按 LAN 侧地址 COALESCE(client_ip, src) 归属，
+           同时拆出 fam=6 的分栈量。仍只累加到已存在的设备行：conns 里
+           大量 WAN 侧公网地址若用 row_for 会瞬间撑满 MAX_DEV。 */
         snprintf(sql, sizeof(sql),
-            "SELECT src, COUNT(*), SUM(byt_o), SUM(byt_r) FROM conns"
-            " WHERE first_ms >= %llu GROUP BY src;", (unsigned long long)from);
+            "SELECT COALESCE(%s, src), COUNT(*), SUM(byt_o), SUM(byt_r),"
+            " SUM(CASE WHEN fam=6 THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN fam=6 THEN byt_o ELSE 0 END),"
+            " SUM(CASE WHEN fam=6 THEN byt_r ELSE 0 END)"
+            " FROM conns WHERE first_ms >= %llu"
+            " GROUP BY 1;", CO_CLIENT_IP, (unsigned long long)from);
         st = prep(sql);
         while (sqlite3_step(st) == SQLITE_ROW) {
             const unsigned char *t = sqlite3_column_text(st, 0);
             if (!t) continue;
-            /* 只累加到已存在的设备行：conns.src 还包含大量 WAN 侧公网地址，
-               用 row_for 会把它们当成新设备、瞬间撑满 MAX_DEV。 */
             const char *key = canon_ip((const char *)t);
             for (int i = 0; i < g_nrows; i++) {
                 if (strcmp(g_rows[i].ip, key)) continue;
-                g_rows[i].conns += sqlite3_column_int64(st, 1);
-                g_rows[i].bo    += sqlite3_column_double(st, 2);
-                g_rows[i].br    += sqlite3_column_double(st, 3);
+                g_rows[i].conns    += sqlite3_column_int64(st, 1);
+                g_rows[i].bo       += sqlite3_column_double(st, 2);
+                g_rows[i].br       += sqlite3_column_double(st, 3);
+                g_rows[i].v6_conns += sqlite3_column_int64(st, 4);
+                g_rows[i].v6_bo    += sqlite3_column_double(st, 5);
+                g_rows[i].v6_br    += sqlite3_column_double(st, 6);
                 break;
             }
         }
@@ -2369,6 +2941,8 @@ static int cmd_dashboard(uint64_t since_ms)
                说明设备还没重连拿到新 IP，明确提示而不是静默合并。 */
             int stale = (d && d->source == DEV_STATIC &&
                          r->canon_n == 0 && r->n > 0) ? 1 : 0;
+            /* 协议族按该设备最近活动地址判断（含 ':' 即 IPv6） */
+            int fam = strchr(act, ':') ? 6 : 4;
             printf("%s{\"device\":%s,\"n\":%lld,\"hosts\":%lld,"
                    "\"ok_rate\":%.4f,\"nx\":%lld,\"ref\":%lld,"
                    "\"avg_ms\":%.2f,\"first_ms\":%lld,\"last_ms\":%lld,"
@@ -2376,7 +2950,9 @@ static int cmd_dashboard(uint64_t since_ms)
                    "\"top_q\":\"%s\",\"active\":%d,"
                    "\"aliases\":\"%s\",\"active_ip\":\"%s\",\"stale_static\":%d,"
                    "\"multi_nic\":%d,"
-                   "\"blocked\":%lld,\"local\":%lld,\"unresolved\":%lld}",
+                   "\"blocked\":%lld,\"local\":%lld,\"unresolved\":%lld,"
+                   "\"fam\":%d,\"v6_conns\":%lld,"
+                   "\"v6_bytes_out\":%.0f,\"v6_bytes_in\":%.0f}",
                    k ? "," : "", dj, r->n, r->hosts,
                    r->n ? (double)r->replied / (double)r->n : 0.0,
                    r->nx, r->ref,
@@ -2385,7 +2961,8 @@ static int cmd_dashboard(uint64_t since_ms)
                    r->conns, r->bo, r->br, et, r->n > 0 ? 1 : 0,
                    ea, eact, stale, d ? d->multi_nic : 0,
                    r->cls_n[HP_BLOCKED], r->cls_n[HP_LOCAL],
-                   r->cls_n[HP_UNRESOLVED]);
+                   r->cls_n[HP_UNRESOLVED],
+                   fam, r->v6_conns, r->v6_bo, r->v6_br);
         }
     }
     printf("],\n");
@@ -2419,10 +2996,15 @@ static int cmd_dashboard(uint64_t since_ms)
     /* --- 最近查询日志（全局，带设备名） --- */
     printf("  \"dns_recent\": [");
     {
-        char sql[768];
+        char sql[1024];
         snprintf(sql, sizeof(sql),
-            "SELECT ts_ms, qname, qtype, rcode, ms, answers, client_ip"
+            "SELECT ts_ms, qname, qtype, rcode, ms,"
+            " COALESCE(%s, answers), client_ip,"
+            " %s, %s, %s, %s, %s, %s, %s"
             " FROM dnsq WHERE ts_ms >= %llu ORDER BY ts_ms DESC LIMIT 200;",
+            DQ_ANSWER_IPS,
+            DQ_SERVER_IP, DQ_SERVER_FAM, DQ_TTL,
+            DQ_ANSWER_CNT, DQ_CLIENT_FAM, DQ_SERVER_PORT, DQ_HP,
             (unsigned long long)from);
         sqlite3_stmt *st = prep(sql);
         int row = 0;
@@ -2430,9 +3012,19 @@ static int cmd_dashboard(uint64_t since_ms)
             const unsigned char *q  = sqlite3_column_text(st, 1);
             const unsigned char *a  = sqlite3_column_text(st, 5);
             const unsigned char *ci = sqlite3_column_text(st, 6);
+            const unsigned char *sv = sqlite3_column_text(st, 7);
             char eq[512], ea[256] = "", eip[64] = "", enm[256] = "";
+            char esv[128] = "", elabel[160] = "";
+            char jm[32] = "null", jttl[32] = "null", cj[256];
             json_esc(q ? (const char *)q : "?", eq, sizeof(eq));
-            json_esc(a ? (const char *)a : "", ea, sizeof(ea));
+            /* 旧行 answers 是 "0"/"1" 计数串 → 归一成空串（前端显示「—」）；
+               新行优先 answer_ips 列（COALESCE），显示真实应答 IP。 */
+            json_esc(norm_answers(a ? (const char *)a : ""), ea, sizeof(ea));
+            json_esc(sv ? (const char *)sv : "", esv, sizeof(esv));
+            char label[128];
+            dns_label_p(sv ? (const char *)sv : "",
+                        sqlite3_column_int(st, 12), label, sizeof(label));
+            json_esc(label, elabel, sizeof(elabel));
             const char *raw_ip = ci ? (const char *)ci : "";
             const char *linked = canon_ip(raw_ip);
             json_esc(linked, eip, sizeof(eip));
@@ -2440,16 +3032,24 @@ static int cmd_dashboard(uint64_t since_ms)
                 devrec_t *d = dev_find(linked);
                 if (d) json_esc(d->display, enm, sizeof(enm));
             }
-            char jm[32] = "null", cj[256];
             if (sqlite3_column_type(st, 4) != SQLITE_NULL)
                 snprintf(jm, sizeof(jm), "%.2f", sqlite3_column_double(st, 4));
+            if (sqlite3_column_type(st, 9) != SQLITE_NULL)
+                snprintf(jttl, sizeof(jttl), "%d", sqlite3_column_int(st, 9));
             cls_json(q ? (const char *)q : "?", sqlite3_column_int(st, 3),
+                     sqlite3_column_type(st, 13) == SQLITE_NULL
+                         ? -1 : sqlite3_column_int(st, 13),
                      cj, sizeof(cj));
             printf("%s{%s\"ts\":%lld,\"q\":\"%s\",\"qtype\":%d,\"rcode\":%d,"
-                   "\"ms\":%s,\"answers\":\"%s\",\"ip\":\"%s\",\"name\":\"%s\"}",
+                   "\"ms\":%s,\"answers\":\"%s\",\"ip\":\"%s\",\"name\":\"%s\","
+                   "\"server\":\"%s\",\"server_label\":\"%s\","
+                   "\"server_fam\":%d,\"ttl\":%s,\"answer_cnt\":%d,"
+                   "\"client_fam\":%d}",
                    row ? "," : "", cj, sqlite3_column_int64(st, 0), eq,
                    sqlite3_column_int(st, 2), sqlite3_column_int(st, 3),
-                   jm, ea, eip, enm);
+                   jm, ea, eip, enm, esv, elabel,
+                   sqlite3_column_int(st, 8), jttl,
+                   sqlite3_column_int(st, 10), sqlite3_column_int(st, 11));
             row++;
         }
         sqlite3_finalize(st);
@@ -2647,6 +3247,11 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "--before") && i + 1 < argc) {
             /* --before 24h 表示"删除 24 小时之前的" */
             before_ms = now_ms() - parse_span(argv[++i]);
+        } else if (!strcmp(argv[i], "--fam") && i + 1 < argc) {
+            const char *f = argv[++i];
+            if (!strcmp(f, "4"))      g_fam = 4;
+            else if (!strcmp(f, "6")) g_fam = 6;
+            else                      g_fam = 0;   /* all / 0 / 空 / 其它一律当 all */
         } else if (!strcmp(argv[i], "--dry-run")) {
             dry_run = 1;
         } else {
@@ -2675,10 +3280,18 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    /* 老库列容错：打开库后探测一次新列是否存在并缓存；随后按 --fam
+       生成 SQL 过滤片段。二者都只依赖内部常量，不涉及用户输入。 */
+    probe_columns();
+    build_fam_cond();
+
     /* 规则同步只做一次：hprules_init 会强制全量加载，
        之后各命令用 hprules_refresh() 按指纹增量更新 */
     hprules_init("/var/run/homeproxy/cache.db",
                  "/etc/config/homeproxy", "/opt/netmon/data");
+
+    /* 归因兜底表达式依赖 hprules_available()，必须放在 init 之后 */
+    build_hp_expr();
 
     int rc = 0;
     if      (!strcmp(cmd, "top"))    rc = cmd_top(since, n, by);
@@ -2686,6 +3299,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "probe"))  rc = cmd_probe(since, only_target);
     else if (!strcmp(cmd, "dns"))    rc = cmd_dns(since);
     else if (!strcmp(cmd, "devices")) rc = cmd_devices(since);
+    else if (!strcmp(cmd, "servers")) rc = cmd_servers(since);
     else if (!strcmp(cmd, "client"))   rc = cmd_client(since, client_ip);
     else if (!strcmp(cmd, "detail")) {
         if (!detail_valid(detail_type, detail_key)) {

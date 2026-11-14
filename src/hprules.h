@@ -67,6 +67,19 @@ int hprules_classify(const char *qname, int rcode, char *rule_out, size_t n);
 int hprules_match(const char *qname, char *rule_out, size_t n);
 int hprules_is_local(const char *qname);
 
+/*
+ * 本地域里的「伴生重试」：形如 mail.example.com.lan。
+ *
+ * 成因：客户端先查 mail.example.com，被 reject（REFUSED）或解析失败后，
+ * resolver 把 DHCP 下发的搜索域 lan 补上去再问一次。它和原始查询是同一件事，
+ * 对「上网到底有没有问题」零信息量。
+ *
+ * 必须和真实内网主机名（nas.lan）分开：后者是正常的局域网解析，
+ * 藏起来会让「查不到内网其他机器」这种真故障看不见。
+ * 判据：去掉最后一级标签后，剩余部分还含 '.'。
+ */
+int hprules_is_local_retry(const char *qname);
+
 int  hprules_meta_count(void);
 const hp_rule_meta_t *hprules_meta(int i);
 int  hprules_pattern_count(void);

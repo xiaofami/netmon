@@ -23,3 +23,8 @@ config netmon 'main'
 
 	# 1 = 输出每次采样的调试日志（量大，仅排障时打开）
 	option loglevel '0'
+
+	# DNS 嗅探接口。br-lan（默认）只看 LAN 侧，抓包量最小，日常足够；
+	# 填 any 则不绑定网卡、收全部网卡的帧，只在排查「某些查询抓不到」时用。
+	# 这是纯旁路只读抓包，不发包、不改任何配置，不影响 DNS 转发与设备上网。
+	option dns_sniff_if 'br-lan'

@@ -10,6 +10,7 @@ src/test_ctparse
 src/test_db
 src/test_dnsmap
 src/test_dnssniff
+src/test_hprules
 src/test_snssniff_bin
 *.o
 
@@ -20,6 +21,7 @@ build/d2.json
 build/dev-*.json
 build/host-*.json
 build/check.js
+build/.check-extracted.js
 
 # 编辑器与系统
 *.swp

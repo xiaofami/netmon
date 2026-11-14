@@ -17,6 +17,7 @@ get_conf() { uci -q get "$1" 2>/dev/null || echo "$2"; }
 PORT=$(get_conf netmon.main.http_port 8090)
 ADDR=$(get_conf netmon.main.listen_addr lan)
 DB=$(get_conf netmon.main.db_path /opt/netmon/data/netmon.db)
+SNIFF_IF=$(get_conf netmon.main.dns_sniff_if br-lan)
 
 # lan / auto：自动取 LAN IP，避免把无鉴权面板绑到 0.0.0.0 暴露到 WAN。
 # 用户显式填了具体地址（含 0.0.0.0）则原样尊重。
@@ -80,5 +81,5 @@ fi
 # 让新的数据库位置 / 保留期 / 采样间隔生效
 /etc/init.d/netmon restart 2>/dev/null || /etc/init.d/netmon start 2>/dev/null || true
 
-logger -t netmon "applied: port=$PORT addr=$ADDR db=$DB"
+logger -t netmon "applied: port=$PORT addr=$ADDR db=$DB sniff_if=$SNIFF_IF"
 echo "netmon: 已应用（面板 http://$ADDR:$PORT/ ，数据库 $DB）"

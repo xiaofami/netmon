@@ -75,9 +75,9 @@ netmon-report status
 ```bash
 # 手动验证测速源
 ssh -F ~/.ssh/netmon.conf router '
-  curl -s -o /dev/null --interface 203.0.113.45 --max-time 12 \
+  curl -s -o /dev/null --interface 192.0.2.45 --max-time 12 \
     -w "code=%{http_code} speed=%{speed_download}\n" \
-    https://proof.ovh.net/files/1Mb.dat'
+    https://speed.example.com/files/1Mb.dat'
 ```
 
 - 通 → 代码问题，看 `logread` 的 err 码
@@ -89,7 +89,7 @@ ssh -F ~/.ssh/netmon.conf router '
 
 ```bash
 ssh -F ~/.ssh/netmon.conf router 'logread -e netmon | grep 探测绕过'
-# 应输出：探测绕过: interface=203.0.113.45
+# 应输出：探测绕过: interface=192.0.2.45
 ```
 
 如果 WAN IP 变了（PPPoE 重拨），需要重启服务让它重新探测：
@@ -105,11 +105,71 @@ ssh -F ~/.ssh/netmon.conf router 'logread -e netmon | grep 探测绕过'
 ssh -F ~/.ssh/netmon.conf router '
   ping -c 3 -W 2 <目标IP>
   # 再试 TCP
-  curl -s -o /dev/null -m 5 -w "%{http_code}\n" --interface 203.0.113.45 https://<目标IP>/'
+  curl -s -o /dev/null -m 5 -w "%{http_code}\n" --interface 192.0.2.45 https://<目标IP>/'
 ```
 
 - ICMP 全丢 + TCP 通 → 禁 ping 主机，代码里会自动降级，不用管
 - 都不通 → **这个目标不要用了**，换一个（见 `DESIGN.md` 4.4 节）
+
+### 2.6 DNS 服务器数据对不上
+
+「DNS 解析」页的服务器榜和新写入的行对不上时，按这三条排查。
+
+**一、只有 1.1.0 之后的行带服务器地址。** `server_ip` 是 1.1.0 新增的列，
+更早的历史行没有。老库升级后，旧数据不会凭空补上，所以「最近 7 天」里
+前几天的记录不参与服务器聚合，这是预期行为，不是丢数据。
+
+```bash
+# 看时间窗内有多少行带服务器信息
+sqlite3 /opt/netmon/data/netmon.db \
+  "SELECT COUNT(*), SUM(server_ip IS NOT NULL) FROM dnsq WHERE ts_ms > (strftime('%s','now')-86400)*1000;"
+```
+
+**二、命令行与页面的时间窗不同。** 页面用顶部选的范围（默认 24 小时），
+`netmon-report servers` 默认也是 24h，但可以传 `--since 7d`；两者对比时先对齐。
+
+```bash
+netmon-report servers --since 24h
+netmon-report servers --since 24h -j   # JSON，字段同 dashboard.dns_servers
+```
+
+文本输出是「服务器 / 名称 / 查询 / 均耗时」。想看某台服务器具体查了什么，
+点页面服务器榜的对应行，会跳到已带服务器筛选的查询日志。
+
+聚合的键是**地址**，不是「地址:端口」。同一个地址如果既在 53 上收查询、又在
+某个自定义端口上收（本机装 stub 解析器时常见），两路会被合并成一行；只有当
+窗口内该地址只出现过一个端口时，才会标出 `ip:端口`。所以「我明明有 :5353 的
+查询，榜上却没写端口」通常是正常的 —— 那台地址同时也在 53 上收查询。
+
+**三、为什么没有「缓存命中率」。** 这一版不做缓存命中判定。被动旁路读不到
+dnsmasq 内部缓存表，也没有解析器自报的 hit / miss 计数；靠「是否观测到上游
+转发 + 应答时延 + TTL 衰减」推断，在 DNS 被代理接管或上游走 DoH / DoT 时
+判定覆盖率不到 2%，算出来的百分比只会误导人（1.1.0 早期实现过，实测后移除）。
+要判断解析快不快，看「平均响应」和查询日志里的耗时、TTL、应答 IP。
+
+如果你的环境里没有代理接管、DNS 全部走明文 53，想让 netmon 重新提供这个
+推断，需要改代码把 `cache_state` 那条链路加回来 —— 不建议，理由同上。
+
+#### 只看 IPv6：`--fam 6`
+
+```bash
+netmon-report dns     --since 24h --fam 6
+netmon-report devices --since 24h --fam 6
+netmon-report top     --since 24h --fam 6 --by cidr
+netmon-report trend   --since 7d  --fam 6
+```
+
+`dns` 按 `dnsq.client_fam` 过滤，`top / trend / devices` 按 `conns.fam` 过滤
+（`devices` 是 DNS 设备列表，同样按客户端协议族）。`--fam 4` 是纯 v4 视角，
+默认 `all`。
+
+`dashboard` 接受 `--fam` 但**不缩数据**，始终返回全量 + `stack` 分栈字段；
+内置页面也是全量展示、每行标协议族，没有协议栈切换开关。CGI 会把 `fam`
+纳入 dashboard 缓存文件名，避免外部调用者用不同 `fam` 时互相串数据。
+
+纯 v6 视角为空时，按顺序确认：设备是否真的有 IPv6 地址、是否在查 AAAA、
+目的地址是否被 v6 噪音过滤（LAN 内互访 / link-local / 组播本来就不该计入）。
+`netmon-report devices --fam 6` 为空不代表采集坏了。
 
 ---
 
@@ -185,7 +245,7 @@ dnsmasq 是局域网唯一 DNS（`192.168.1.1:53`）。**每次重启，全屋�
 
 曾经看到
 ```
-dhcp.customoption.dhcp_option='6,223.5.5.5,114.114.114.114'
+dhcp.customoption.dhcp_option='6,192.0.2.53,192.0.2.54'
 ```
 就断言"全局 DNS 被改掉了"。**实际上这只绑定了单台设备**（`192.168.1.103`），
 用户主机的配置一切正常。差点误报。
@@ -255,7 +315,7 @@ ssh -F ~/.ssh/netmon.conf router 'grep -cE "logqueries|logfacility" /etc/config/
 # 必须返回 0
 
 # 验证 DNS 与出网正常
-ssh -F ~/.ssh/netmon.conf router 'nslookup www.baidu.com 127.0.0.1; ping -c 2 223.5.5.5'
+ssh -F ~/.ssh/netmon.conf router 'nslookup www.example.com 127.0.0.1; ping -c 2 192.0.2.53'
 ```
 
 ### 教训
@@ -275,7 +335,7 @@ ssh -F ~/.ssh/netmon.conf router 'nslookup www.baidu.com 127.0.0.1; ping -c 2 22
 DNS 分流和解析**完全不受影响**。
 
 验证结果：
-- 能抓到真实域名（`rtmp01open.ipcam-cloud.com`、`api.example-video.com`、`analytics.example-cdn.com` 等）
+- 能抓到真实域名（`cam.example.com`、`api.example.com`、`telemetry.example.com` 等）
 - 解析成功率 94%
 - 反查表建立 19+ 条 IP→域名映射
 - 服务运行期间 DNS 一切正常
@@ -314,8 +374,8 @@ netmon 直接写 syslog（`LOG_DAEMON`），级别由代码决定，不写文件
 | `daemon.err` | 真故障（库打不开、建表失败、刷盘失败） | 是 |
 | `daemon.debug` | 每秒采样明细、每分钟心跳（`stat:`） | **否** |
 
-`stat:` 心跳默认不输出：每分钟一条、一天 1440 条，会把 logd 那点环形缓冲里
-别的服务的日志挤掉。要观察时设 UCI `loglevel` 为 `1`（等价命令行 `-v`）：
+`stat:` 心跳默认不输出：每分钟一条、一天上千条，会把 logd 那点
+环形缓冲里别的服务的日志挤掉。要观察时设 UCI `loglevel` 为 `1`（等价命令行 `-v`）：
 
 ```bash
 uci set netmon.main.loglevel=1 && uci commit netmon && /etc/init.d/netmon restart

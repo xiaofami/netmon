@@ -107,6 +107,45 @@ static void t_ipv6(void)
     CHECK(r.byt_orig == 7938 && r.byt_repl == 5400, "字节 7938/5400");
 }
 
+/*
+ * IPv6 conntrack 行 + icmpv6（1.1.0）。
+ *
+ * 注意：解析器把 l4proto 用 strncmp(,"icmp",4) 先判，所以 "icmpv6" 会
+ * 落到 IPPROTO_ICMP（既存行为，本测试不锁死 proto 的具体值，只锁
+ * 「是 ICMP 系、端口归零」）。这里真正要验证的是：IPv6 行能被解析、
+ * 128 位地址被正确写入 16 字节缓冲、双向字节数、端口归零、有应答方向。
+ */
+static void t_icmpv6(void)
+{
+    printf("\n[ipv6 icmpv6]\n");
+    char line[] = "ipv6     10 icmpv6   58 29 "
+                  "src=2001:db8:1:2::10 dst=2001:db8:3:4::31 "
+                  "type=128 code=0 id=1234 packets=2 bytes=128 "
+                  "src=2001:db8:3:4::31 dst=2001:db8:1:2::10 "
+                  "type=129 code=0 id=1234 packets=2 bytes=128 "
+                  "mark=0 zone=0 use=2";
+    ct_rec_t r;
+    CHECK(ct_parse_line(line, &r) == 1, "解析成功");
+    CHECK(r.key.family == 6, "family=6");
+    CHECK(r.key.proto == IPPROTO_ICMP || r.key.proto == IPPROTO_ICMPV6,
+          "proto=icmp 系（既存实现把 icmpv6 归到 ICMP 之一）");
+
+    /* 2001:db8:1:2::10 的前 4 字节应为 20 01 0d b8，确认是 16 字节 v6 地址 */
+    CHECK(r.key.src[0] == 0x20 && r.key.src[1] == 0x01 &&
+          r.key.src[2] == 0x0d && r.key.src[3] == 0xb8,
+          "src 为 2001:db8 开头的 16 字节 v6 地址");
+    char a[64], b[64];
+    inet_ntop(AF_INET6, r.key.src, a, sizeof(a));
+    inet_ntop(AF_INET6, r.key.dst, b, sizeof(b));
+    CHECK(strchr(a, ':') != NULL && a[0] != '?', "src 可格式化为 IPv6: %s", a);
+    CHECK(strchr(b, ':') != NULL && b[0] != '?', "dst 可格式化为 IPv6: %s", b);
+
+    CHECK(r.key.sport == 0 && r.key.dport == 0, "icmpv6 端口归零");
+    CHECK(r.byt_orig == 128 && r.byt_repl == 128, "字节 128/128");
+    CHECK(r.pkt_orig == 2 && r.pkt_repl == 2, "包数 2/2");
+    CHECK(r.have_reply == 1, "有应答方向");
+}
+
 static void t_mark(void)
 {
     printf("\n[带 mark 的连接]\n");
@@ -129,6 +168,7 @@ int main(void)
     t_icmp();
     t_unreplied();
     t_ipv6();
+    t_icmpv6();
     t_mark();
 
     printf("\n=== 结果: %s (失败 %d) ===\n", fails ? "失败" : "全部通过", fails);

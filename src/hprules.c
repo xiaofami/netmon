@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>   /* strcasecmp / strncasecmp：POSIX 规定在这里，别只靠 glibc 的 string.h 兜底 */
 #include <stdint.h>
 #include <ctype.h>
 #include <regex.h>
@@ -632,6 +633,34 @@ int hprules_is_local(const char *qname)
         if (n > sn && qname[n - sn - 1] == '.' &&
             !strcasecmp(qname + n - sn, LOCAL_SUF[i])) return 1;
     }
+    return 0;
+}
+
+int hprules_is_local_retry(const char *qname)
+{
+    if (!qname || !*qname) return 0;
+    if (!hprules_is_local(qname)) return 0;
+
+    size_t n = strlen(qname);
+    while (n && qname[n - 1] == '.') n--;      /* 容忍 FQDN 的尾点 */
+
+    size_t i = n;
+    while (i > 0 && qname[i - 1] != '.') i--;  /* i = 最后一级标签起点 */
+    if (i < 2) return 0;                       /* 没有点 → 单标签名 */
+
+    /*
+     * 只有搜索域才会被客户端自动追加。.arpa 是标准反查后缀
+     * （1.0.2.192.in-addr.arpa 本身就是完整名字），.invalid 是保留域，
+     * 把它们的层级结构当成「补后缀」会误判 —— 反查是真查询，不能折叠。
+     */
+    const char *suf = qname + i;
+    if (strcasecmp(suf, "lan") && strcasecmp(suf, "local") &&
+        strcasecmp(suf, "localdomain"))
+        return 0;
+
+    /* 剩余部分 qname[0 .. i-2] 里若还有 '.'，说明是把完整域名拼上了本地后缀 */
+    for (size_t k = 0; k + 1 < i - 1; k++)
+        if (qname[k] == '.') return 1;
     return 0;
 }
 
