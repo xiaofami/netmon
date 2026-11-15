@@ -318,6 +318,11 @@ Quad9 / 百度，含 IPv6 地址）→ 对应名称；私有 / ULA / link-local 
 > 1.1.0 早期版本这里还有 `hit` / `miss` / `local` / `unknown` / `hit_rate` /
 > `upstreams`，随缓存推断一起移除。
 
+> **`ip` 是报文里写的目的地址，不是实际应答者。** 路由器对 udp/53 做了重定向
+> （homeproxy 一类，nft 里能搜到 `DNSMASQ HIJACK`）时，客户端发给 223.5.5.5 的
+> 查询会被本机解析器接住，`ip` 仍然是 223.5.5.5 —— 这是观测事实，不做推断。
+> 识别靠 `avg_ms` 亚毫秒 + 大量 `rcode=5`，见 `OPERATIONS.md` 2.7。
+
 `dns_recent[]`（每行在旧字段之外新增）：
 
 | 字段 | 含义 |

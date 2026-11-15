@@ -1056,7 +1056,7 @@ footer{color:var(--fg3);font-size:11px;text-align:center;padding:18px 0 0;font-f
         <div class="panel-b pad"><div class="notecard" id="system-cmd"></div></div></div>
     </section>
 
-    <footer>netmon · 被动旁路采集 · 面板 v1.1.0 · <span id="last-update">—</span></footer>
+    <footer>netmon · 被动旁路采集 · 面板 v1.1.2 · <span id="last-update">—</span></footer>
   </main>
 </div>
 
@@ -2053,7 +2053,16 @@ function renderDns(d){
     '的环境里判定覆盖率极低（实测不足 2%），数字没有参考价值，因此这一版不再提供。'+
     '要判断解析快不快，看「平均响应」和查询日志里的 TTL、应答 IP 即可。<br>'+
     '<b>这一页最有用的用法：</b>如果某台设备绕开路由器、直连外部解析器，这里会多出一行；'+
-    '本机解析器（dnsmasq）通常占绝大多数。';
+    '本机解析器（dnsmasq）通常占绝大多数。<br>'+
+    '<b>但「多出一行外部 DNS」不等于设备绕过了 dnsmasq。</b>'+
+    '路由器上做了 udp/53 重定向时（homeproxy 一类，nft 里能搜到 '+
+    '<code>DNSMASQ HIJACK</code>），'+
+    '客户端以为自己发给 223.5.5.5 / 114.114.114.114，报文在转发前就被劫持到本机解析器，'+
+    '而这一列显示的是<b>报文里写的目的地址</b>，所以仍然记成外部服务器。'+
+    '识别特征很明确：这些行的耗时低到<b>亚毫秒</b>（根本没出公网），'+
+    '并且常伴随大量 <span class="pill bad">REFUSED</span>（本机按拦截规则拒绝，'+
+    '为的是不把查询漏给上游）。看到这个组合，说明劫持在正常工作，'+
+    '而不是有设备私自换了 DNS。';
 }
 
 function renderHeatmap(d){
@@ -2768,7 +2777,11 @@ function renderQueries(d){
   $('queries-note').innerHTML='<b>DNS 服务器</b>取自查询报文的目的地址（应答的源地址），'+
     '即客户端真正把查询发给谁。局域网默认所有设备都指向本机 dnsmasq，'+
     '这时这一列整屏同一个值、没有信息量，会自动收起来；'+
-    '出现绕过 dnsmasq 直接查外部的设备时才重新显示。整体分布去「DNS 解析」页看。<br>'+
+    '出现查外部的行时才重新显示。整体分布去「DNS 解析」页看。<br>'+
+    '<b>注意它记的是报文里写的目的地址。</b>如果路由器对 udp/53 做了重定向'+
+    '（homeproxy 一类，nft 里能搜到 <code>DNSMASQ HIJACK</code>），这些行会被本机'+
+    '解析器接住 —— 耗时低到亚毫秒、常伴 REFUSED，说明劫持生效、查询没漏出去，'+
+    '并不代表设备真的绕过了 dnsmasq。<br>'+
     '<b>状态说明：</b>正常 = 解析成功；<span class="pill bad">广告拦截</span> 命中 homeproxy 的 reject 规则；'+
     '<span class="pill na">本地域</span> 查的是 <code>.lan</code> 这类局域网域名；'+
     '<span class="pill warn">解析失败</span> 才是真的没解析出来。<br>'+
