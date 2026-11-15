@@ -1279,10 +1279,20 @@ function donut(parts,total,centerLabel){
 }
 
 
+/* 查询日志的数据源。
+   选了某台 DNS 服务器时，用后端按服务器筛出来的那一份（qlog 视图）：
+   dashboard 里的 dns_recent 只有全局最近 200 条，外部解析器在 24 小时里
+   只占几个百分点，200 条里常常一条都不属于它 —— 在前端筛是筛不出
+   后端没发来的行的。没选服务器时仍然用 dashboard 自带的那份，省一次请求。 */
+function logSource(d){
+  if(S.dnsServer&&S.qlog)return S.qlog;
+  return (d&&d.dns_recent)||[];
+}
+
 /* 查询日志的筛选条件只在这里算一次，渲染与 CSV 导出共用，
    保证「导出的就是当前屏幕上看到的那些行」（旧实现导出的是全量）。 */
 function filteredQueries(d){
-  var all=(d&&d.dns_recent)||[];
+  var all=logSource(d);
   return all.filter(function(r){
     /* 伴生重试默认不显示：它是原查询失败后的补问，不是一次独立访问 */
     if(!S.retry&&r.retry)return false;
@@ -1359,6 +1369,10 @@ var S = {
   since:86400, view:'overview', ip:'', theme:'dark', auto:true,
   data:null, client:null, detail:null, dtype:'', dkey:'', detailFrom:'#/overview',
   clientFrom:'#/clients', dnsServer:'',
+  /* 按服务器筛出来的查询日志（view=qlog 的结果）。
+     null = 还没拿/正在拿，此时回退到 dashboard 里的 dns_recent；
+     qlogKey 记住这份数据对应哪台服务器与时间窗，换了就重拉。 */
+  qlog:null, qlogKey:'',
   q:'', filter:'all', layout:'card', sort:'total',
   rcode:'all', cls:'all', csort:'queries', dq:'', qq:'', timer:null,
   /* retry=1 时显示「域重试」行（mail.example.com.lan 这类）。默认关：
@@ -1460,7 +1474,7 @@ function initStatic(){
   $('csort-box').onchange=function(){ S.csort=this.value;renderView(); };
   $('srv-box').onchange=function(){
     S.dnsServer=this.value==='__all'?'':this.value;
-    S.page.queries=1; syncHash(); renderView();
+    S.page.queries=1; syncHash(); loadQlog(); renderView();
   };
 
   $('go-clients').onclick=function(){location.hash='#/clients';};
@@ -1558,6 +1572,8 @@ function initStatic(){
     if(sg){ var sv=sg.getAttribute('data-srvgo');
       S.dnsServer=(sv&&sv!=='__all')?sv:'';
       S.rcode='all';S.cls='all';S.qq='';S.page.queries=1;
+      S.qlog=null;S.qlogKey='';          /* 先清掉上一台的日志，别闪别人的行 */
+      loadQlog();
       location.hash='#/queries'; syncHash(); renderView(); return; }
     var st=ev.target.closest?ev.target.closest('[data-star]'):null;
     if(st){ favToggle(st.getAttribute('data-star'),st.getAttribute('data-skey')); return; }
@@ -1696,6 +1712,10 @@ function navigate(){
   var t=TITLES[v]||TITLES.overview;
   $('page-title').textContent=v==='client'?'设备详情':t[0];
   $('page-sub').textContent=t[1];
+  if(v==='queries'||v==='dns'){
+    /* URL 里带着 server= 时（刷新页面、从别处点回来）也要把日志拉回来 */
+    loadQlog();
+  }
   if(v==='client'){
     $('crumb-ip').textContent=S.ip;
     /* 切换设备时清掉上一台的残留，先给一个加载态，避免闪现旧数据 */
@@ -1734,6 +1754,16 @@ function xhr(url,ok,fail){
      线上页面没有这个全局变量，走正常 CGI 请求，不受影响。 */
   if(typeof NETMON_DEMO!=='undefined'&&NETMON_DEMO){
     /* 同步返回：预览页在 load 事件前就渲染完，无头浏览器截图不会拍到空壳 */
+    if(url.indexOf('view=qlog')>=0){
+      /* 预览数据里没有单独存一份按服务器的日志，用 dns_recent 筛出来顶上：
+         和线上一样按 server 过滤，版式和交互才能一起被截图/自检覆盖。 */
+      var mq=/[?&]server=([^&]+)/.exec(url);
+      var sq=mq?decodeURIComponent(mq[1]):'';
+      var qall=((NETMON_DEMO.dashboard||{}).dns_recent)||[];
+      ok({since_ms:0,server:sq,n:0,rows:qall.filter(function(r){
+        return !sq||String(r.server||'')===sq;})});
+      return;
+    }
     if(url.indexOf('view=client')>=0){
       var m=/[?&]ip=([^&]+)/.exec(url), ip=m?decodeURIComponent(m[1]):'';
       ok((NETMON_DEMO.clients&&NETMON_DEMO.clients[ip])||NETMON_DEMO.client);
@@ -1768,6 +1798,7 @@ function load(){
     var tm=new Date().toLocaleTimeString('zh-CN',{hour12:false});
     $('last-update').textContent='更新于 '+tm;$('side-update').textContent=tm;var h=$('side-host');if(h&&!h.dataset.set&&location.hostname){h.textContent=location.hostname;h.dataset.set='1';}
     $('nav-cnt').textContent=d.devices?d.devices.length:'—';
+    loadQlog(true);   /* 选了某台 DNS 服务器时顺带刷新它的日志 */
     renderView();
   },function(msg){setDot('err','离线');showErr(msg+'：检查 netmon 与 uhttpd 是否在运行');});
 }
@@ -1786,6 +1817,24 @@ function loadDetail(){
       '&key='+encodeURIComponent(S.dkey)+'&since='+S.since+'&_='+Date.now(),
     function(x){ if(x.error){showErr(x.error);return;} S.detail=x;renderView(); },
     function(msg){showErr('条目详情加载失败：'+msg);});
+}
+/* 按服务器拉查询日志。
+   refresh=true 时保留屏幕上的旧行（自动刷新用），避免每 10 秒闪一下「加载中」。 */
+function loadQlog(refresh){
+  if(!S.dnsServer){ S.qlog=null;S.qlogKey='';return; }
+  var key=S.dnsServer+'|'+S.since;
+  if(!refresh&&S.qlogKey===key)return;
+  S.qlogKey=key;
+  if(!refresh)S.qlog=null;
+  xhr(API+'?view=qlog&server='+encodeURIComponent(S.dnsServer)+
+      '&since='+S.since+'&_='+Date.now(),
+    function(r){
+      if(S.qlogKey!==key)return;            /* 期间换了服务器：丢弃旧响应 */
+      /* 离机预览里没有 qlog 数据，rows 缺失时保持 null，自动回退到 dns_recent */
+      S.qlog=(r&&r.rows&&r.rows.length!=null)?r.rows:null;
+      renderView();
+    },
+    function(msg){ if(S.qlogKey!==key)return; S.qlog=null;showErr('查询日志加载失败：'+msg); });
 }
 
 /* 窄屏卡片模式下，从表头自动给每个单元格取标签。
@@ -2668,16 +2717,24 @@ function srvVaried(list){
   return false;
 }
 function renderQueries(d){
-  var all=d.dns_recent||[],list=filteredQueries(d);
+  var srv=S.dnsServer;
+  /* 选了服务器但日志还没回来：先给加载态。
+     不能拿 dashboard 的全局 200 条顶上 —— 那 200 条里几乎都不是这台
+     服务器的查询，顶上只会让人以为「它没有记录」。 */
+  var loading=!!(srv&&!S.qlog);
+  var all=logSource(d),list=loading?[]:filteredQueries(d);
   /*
    * 局域网默认所有设备都指向本机 dnsmasq，这时「DNS 服务器」列每行同一个值，
    * 纯占宽度 —— 收掉它。只有真的出现第二台（有设备绕过 dnsmasq、
    * 或 dnsmasq 自己也向上游查被 any 模式抓到）才显示，那时它才有信息量。
    */
   var varied=srvVaried(all);
+  /* 显式筛了某台服务器时，这一列必须留着 —— 被筛过的行当然都一样，
+     但「via 阿里」正是用户此刻唯一想确认的事。 */
+  var showSrv=varied||!!S.dnsServer;
   var vq=$('v-queries'), sb=$('srv-box');
-  if(vq){ if(varied) vq.classList.remove('no-srv'); else vq.classList.add('no-srv'); }
-  if(sb) sb.style.display=varied?'':'none';
+  if(vq){ if(showSrv) vq.classList.remove('no-srv'); else vq.classList.add('no-srv'); }
+  if(sb) sb.style.display=showSrv?'':'none';
   /* 服务器下拉按本次数据重建，保留当前选中项；筛选条件同步进 URL */
   if(sb){
     var opts='<option value="__all">服务器：全部</option>';
@@ -2687,7 +2744,11 @@ function renderQueries(d){
     sb.value=S.dnsServer||'__all';
   }
   S.page.queries=pager('pg-queries',list.length,S.page.queries,20,'queries');
-  $('queries-count').innerHTML='显示 <b>'+list.length+'</b> / '+all.length+' 条最近记录 · 每页 20 条';
+  $('queries-count').innerHTML=loading
+    ? '正在加载 <b>'+esc(srv)+'</b> 的查询日志…'
+    : (srv
+        ? '显示 <b>'+list.length+'</b> / '+all.length+' 条 · 只看 '+esc(srv)+' · 每页 20 条'
+        : '显示 <b>'+list.length+'</b> / '+all.length+' 条最近记录 · 每页 20 条');
   rowsHtml('queries-body',pageSlice(list,S.page.queries,20),function(r){
     var ans=ansText(r.answers);
     return '<div class="row g-qlog"'+dt('qname',r.q)+'>'+
@@ -2715,8 +2776,14 @@ function renderQueries(d){
     '<b>关于「域重试」：</b>客户端解析失败后，resolver 会把 DHCP 下发的搜索域（'+
     '本机是 <code>lan</code>）补到域名后面再问一次，于是出现 <code>mail.example.com.lan</code> 这种行。'+
     '它和原始查询是同一件事，所以默认不显示 —— 上面「含重试」可以打开对照。<br>'+
-    '接口返回最近 200 条，每页 20 条；「导出」只导出当前筛选结果。'+
-    '更长的历史用 <code>netmon-report dns --since 7d</code>。';
+    '<b>选中某台服务器后为什么变多了：</b>不筛选时这一页用总览接口里的'+
+    '「最近 200 条」，而服务器榜是整时段聚合 —— 外部解析器在总量里只占几个'+
+    '百分点，200 条里常常一条都不属于它，看着像「它没有记录」。所以选中一台'+
+    '服务器后，这一页会单独向后端要这台服务器的日志（按 <code>server_ip</code> '+
+    '过滤，与榜上的数字同源），两边才对得上。<br>'+
+    '每页 20 条；「导出」只导出当前筛选结果。更长的历史用 '+
+    '<code>netmon-report qlog --since 7d --server IP</code>，'+
+    '或直接 <code>netmon-report dns --since 7d</code> 看域名分布。';
 }
 
 /* ---------------- 域名排行 ---------------- */

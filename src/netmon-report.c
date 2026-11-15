@@ -466,6 +466,10 @@ static void usage(void)
 "          按设备（客户端 IP）看 DNS 行为：查了多少、查什么、应答率。\n"
 "  servers [--since 24h] [-j]\n"
 "          按 DNS 服务器看查询量与平均耗时（-j 输出 JSON）。\n"
+"  qlog    [--since 24h] [--server IP] [-n 200]\n"
+"          查询日志明细，可按 DNS 服务器过滤（-j 输出 JSON）。\n"
+"          Web 上点服务器榜下钻走的就是这条；dashboard 里的 dns_recent\n"
+"          只有全局最近 200 条，外部解析器占比很低，筛出来常常是空的。\n"
 "  client  --ip IP [--since 24h]\n"
 "          单台设备完整详情（概况/活动曲线/Top 域名/查询日志/流量），始终输出 JSON。\n"
 "  status\n"
@@ -486,6 +490,7 @@ static void usage(void)
 "                 dnsq 用 client_fam、conns 用 fam；dashboard 接受但不缩数据，\n"
 "                 分栈信息见 stack 字段）\n"
 "  --ip IP        client 命令指定客户端 IP\n"
+"  --server IP    qlog 命令只看这台 DNS 服务器（查询报文的目的地址）\n"
 "  -j, --json     输出 JSON\n"
 "  -d, --db PATH  指定数据库（默认 /opt/netmon/data/netmon.db）\n"
 "  -h, --help     帮助\n");
@@ -2535,6 +2540,158 @@ static void emit_traffic(uint64_t from)
     printf("],\n");
 }
 
+/* ---------------- 查询日志行（dns_recent / qlog 共用） ---------------- */
+
+/*
+ * 把当前行输出成前端 renderQueries() 认的行对象。
+ *
+ * 两个调用方（dashboard 的 dns_recent 与 qlog 子命令）共用这一处：
+ * 字段名和前端一一对应，各写一遍迟早漂移 —— 少一个 server_fam，
+ * IPv6 标签就没了；漏掉 answer_cnt，应答数就退回前端自己数逗号。
+ *
+ * 列序固定，调用方的 SELECT 必须按这个顺序取：
+ *   0 ts_ms  1 qname  2 qtype  3 rcode  4 ms  5 answers(COALESCE answer_ips)
+ *   6 client_ip  7 server_ip  8 server_fam  9 ttl  10 answer_cnt
+ *  11 client_fam  12 server_port  13 hp
+ */
+static void emit_dnsq_row(sqlite3_stmt *st, int first)
+{
+    const unsigned char *q  = sqlite3_column_text(st, 1);
+    const unsigned char *a  = sqlite3_column_text(st, 5);
+    const unsigned char *ci = sqlite3_column_text(st, 6);
+    const unsigned char *sv = sqlite3_column_text(st, 7);
+    char eq[512], ea[256] = "", eip[64] = "", enm[256] = "";
+    char esv[128] = "", elabel[160] = "";
+    char jm[32] = "null", jttl[32] = "null", cj[256];
+    char label[128];
+
+    json_esc(q ? (const char *)q : "?", eq, sizeof(eq));
+    /* 旧行 answers 是 "0"/"1" 计数串 → 归一成空串（前端显示「—」）；
+       新行优先 answer_ips 列（COALESCE），显示真实应答 IP。 */
+    json_esc(norm_answers(a ? (const char *)a : ""), ea, sizeof(ea));
+    json_esc(sv ? (const char *)sv : "", esv, sizeof(esv));
+    dns_label_p(sv ? (const char *)sv : "",
+                sqlite3_column_int(st, 12), label, sizeof(label));
+    json_esc(label, elabel, sizeof(elabel));
+    const char *raw_ip = ci ? (const char *)ci : "";
+    const char *linked = canon_ip(raw_ip);
+    json_esc(linked, eip, sizeof(eip));
+    if (linked[0]) {
+        devrec_t *d = dev_find(linked);
+        if (d) json_esc(d->display, enm, sizeof(enm));
+    }
+    if (sqlite3_column_type(st, 4) != SQLITE_NULL)
+        snprintf(jm, sizeof(jm), "%.2f", sqlite3_column_double(st, 4));
+    if (sqlite3_column_type(st, 9) != SQLITE_NULL)
+        snprintf(jttl, sizeof(jttl), "%d", sqlite3_column_int(st, 9));
+    cls_json(q ? (const char *)q : "?", sqlite3_column_int(st, 3),
+             sqlite3_column_type(st, 13) == SQLITE_NULL
+                 ? -1 : sqlite3_column_int(st, 13),
+             cj, sizeof(cj));
+    printf("%s{%s\"ts\":%lld,\"q\":\"%s\",\"qtype\":%d,\"rcode\":%d,"
+           "\"ms\":%s,\"answers\":\"%s\",\"ip\":\"%s\",\"name\":\"%s\","
+           "\"server\":\"%s\",\"server_label\":\"%s\","
+           "\"server_fam\":%d,\"ttl\":%s,\"answer_cnt\":%d,"
+           "\"client_fam\":%d}",
+           first ? "" : ",", cj, sqlite3_column_int64(st, 0), eq,
+           sqlite3_column_int(st, 2), sqlite3_column_int(st, 3),
+           jm, ea, eip, enm, esv, elabel,
+           sqlite3_column_int(st, 8), jttl,
+           sqlite3_column_int(st, 10), sqlite3_column_int(st, 11));
+}
+
+/* ---------------- qlog（按服务器筛的查询日志） ---------------- */
+
+/*
+ * 为什么单独做一条命令，而不是给 dashboard 加个参数：
+ *
+ *   dashboard 里的 dns_recent 是「全局最近 200 条」，服务器榜却是整窗口
+ *   聚合，两个窗口差着三个数量级。24 小时里外部解析器只占几个百分点，
+ *   200 条里往往一条都不属于它 —— 榜上写着几千次，点进去一片空白。
+ *   而在前端「筛」是筛不出后端没发来的行的。
+ *
+ * 这里把筛选下推到 SQL，命中 idx_dnsq_server，与榜上的数字同源：
+ * 榜上几千次，这里就有几千条可以翻。--server 省略时退化成「全服务器」。
+ */
+static int cmd_qlog(uint64_t since_ms, const char *server, int n)
+{
+    uint64_t from = now_ms() - since_ms;
+    if (n <= 0) n = 200;
+
+    /* 服务器地址只按「非空」判断，值一律走 sqlite3_bind，不拼进 SQL。
+       CGI 层已经做过字符白名单，这里是第二道。 */
+    const char *cond = (server && server[0]) ? " AND server_ip = ?" : "";
+
+    if (!g_json) {
+        char who[80];
+        if (server && server[0]) snprintf(who, sizeof(who), " · %s", server);
+        else                     snprintf(who, sizeof(who), "，全部服务器");
+        printf("\n查询日志（最近 %.1f 小时%s）\n", since_ms / 3600000.0, who);
+        printf("%-8s %-17s %-40s %-16s %6s %8s\n",
+               "时间", "客户端", "域名", "服务器", "rcode", "耗时");
+        printf("--------------------------------------------------------------------------\n");
+    }
+
+    hprules_refresh(NULL);
+    load_catalog();          /* canon_ip / dev_find 要用目录 */
+
+    char sql[1024];
+    snprintf(sql, sizeof(sql),
+        "SELECT ts_ms, qname, qtype, rcode, ms,"
+        " COALESCE(%s, answers), client_ip,"
+        " %s, %s, %s, %s, %s, %s, %s"
+        " FROM dnsq WHERE ts_ms >= %llu%s%s"
+        " ORDER BY ts_ms DESC LIMIT %d;",
+        DQ_ANSWER_IPS,
+        DQ_SERVER_IP, DQ_SERVER_FAM, DQ_TTL,
+        DQ_ANSWER_CNT, DQ_CLIENT_FAM, DQ_SERVER_PORT, DQ_HP,
+        (unsigned long long)from, cond, g_fam_dnsq, n);
+
+    sqlite3_stmt *st = prep(sql);
+    if (!st) { fprintf(stderr, "查询失败\n"); return 2; }
+    if (cond[0]) sqlite3_bind_text(st, 1, server, -1, SQLITE_TRANSIENT);
+
+    if (g_json) {
+        printf("{\"since_ms\":%llu,\"server\":\"", (unsigned long long)from);
+        char esv[128];
+        json_esc((server && server[0]) ? server : "", esv, sizeof(esv));
+        printf("%s\",\"rows\":[", esv);
+    }
+
+    int row = 0;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        if (g_json) {
+            emit_dnsq_row(st, row == 0);
+        } else {
+            const unsigned char *q = sqlite3_column_text(st, 1);
+            const unsigned char *ci = sqlite3_column_text(st, 6);
+            const unsigned char *sv = sqlite3_column_text(st, 7);
+            char tm[32];
+            time_t sec = (time_t)(sqlite3_column_int64(st, 0) / 1000);
+            struct tm tmv;
+            localtime_r(&sec, &tmv);
+            strftime(tm, sizeof(tm), "%H:%M:%S", &tmv);
+            char label[128];
+            dns_label_p(sv ? (const char *)sv : "",
+                        sqlite3_column_int(st, 12), label, sizeof(label));
+            printf("%-8s %-17s %-40.40s %-16s %6d %7.2fms\n",
+                   tm, ci ? (const char *)ci : "?",
+                   q ? (const char *)q : "?",
+                   label, sqlite3_column_int(st, 3),
+                   sqlite3_column_type(st, 4) == SQLITE_NULL
+                       ? 0.0 : sqlite3_column_double(st, 4));
+        }
+        row++;
+    }
+    sqlite3_finalize(st);
+
+    if (g_json) printf("],\"n\":%d}\n", row);
+    else if (!row) printf("（这段时间没有查询记录）\n");
+    else printf("--------------------------------------------------------------------------\n"
+                "共 %d 条\n", row);
+    return 0;
+}
+
 /* ---------------- dashboard（给前端用） ---------------- */
 
 /*
@@ -3009,47 +3166,8 @@ static int cmd_dashboard(uint64_t since_ms)
         sqlite3_stmt *st = prep(sql);
         int row = 0;
         while (sqlite3_step(st) == SQLITE_ROW) {
-            const unsigned char *q  = sqlite3_column_text(st, 1);
-            const unsigned char *a  = sqlite3_column_text(st, 5);
-            const unsigned char *ci = sqlite3_column_text(st, 6);
-            const unsigned char *sv = sqlite3_column_text(st, 7);
-            char eq[512], ea[256] = "", eip[64] = "", enm[256] = "";
-            char esv[128] = "", elabel[160] = "";
-            char jm[32] = "null", jttl[32] = "null", cj[256];
-            json_esc(q ? (const char *)q : "?", eq, sizeof(eq));
-            /* 旧行 answers 是 "0"/"1" 计数串 → 归一成空串（前端显示「—」）；
-               新行优先 answer_ips 列（COALESCE），显示真实应答 IP。 */
-            json_esc(norm_answers(a ? (const char *)a : ""), ea, sizeof(ea));
-            json_esc(sv ? (const char *)sv : "", esv, sizeof(esv));
-            char label[128];
-            dns_label_p(sv ? (const char *)sv : "",
-                        sqlite3_column_int(st, 12), label, sizeof(label));
-            json_esc(label, elabel, sizeof(elabel));
-            const char *raw_ip = ci ? (const char *)ci : "";
-            const char *linked = canon_ip(raw_ip);
-            json_esc(linked, eip, sizeof(eip));
-            if (linked[0]) {
-                devrec_t *d = dev_find(linked);
-                if (d) json_esc(d->display, enm, sizeof(enm));
-            }
-            if (sqlite3_column_type(st, 4) != SQLITE_NULL)
-                snprintf(jm, sizeof(jm), "%.2f", sqlite3_column_double(st, 4));
-            if (sqlite3_column_type(st, 9) != SQLITE_NULL)
-                snprintf(jttl, sizeof(jttl), "%d", sqlite3_column_int(st, 9));
-            cls_json(q ? (const char *)q : "?", sqlite3_column_int(st, 3),
-                     sqlite3_column_type(st, 13) == SQLITE_NULL
-                         ? -1 : sqlite3_column_int(st, 13),
-                     cj, sizeof(cj));
-            printf("%s{%s\"ts\":%lld,\"q\":\"%s\",\"qtype\":%d,\"rcode\":%d,"
-                   "\"ms\":%s,\"answers\":\"%s\",\"ip\":\"%s\",\"name\":\"%s\","
-                   "\"server\":\"%s\",\"server_label\":\"%s\","
-                   "\"server_fam\":%d,\"ttl\":%s,\"answer_cnt\":%d,"
-                   "\"client_fam\":%d}",
-                   row ? "," : "", cj, sqlite3_column_int64(st, 0), eq,
-                   sqlite3_column_int(st, 2), sqlite3_column_int(st, 3),
-                   jm, ea, eip, enm, esv, elabel,
-                   sqlite3_column_int(st, 8), jttl,
-                   sqlite3_column_int(st, 10), sqlite3_column_int(st, 11));
+            /* 行格式与 qlog 子命令共用同一处实现，两个视图的字段不会漂移 */
+            emit_dnsq_row(st, row == 0);
             row++;
         }
         sqlite3_finalize(st);
@@ -3213,10 +3331,12 @@ int main(int argc, char **argv)
 
     uint64_t since = 24ULL * 3600 * 1000;   /* 默认 24 小时 */
     int n = 20;
+    int n_set = 0;                          /* -n 是否显式给过（qlog 默认 200 条） */
     const char *by = "cidr";
     const char *unit = "hour";
     const char *only_target = NULL;
     const char *client_ip = NULL;
+    const char *qlog_server = NULL;
     const char *detail_type = NULL;
     const char *detail_key  = NULL;
     uint64_t before_ms = 0;
@@ -3232,6 +3352,10 @@ int main(int argc, char **argv)
         } else if ((!strcmp(argv[i], "-n") || !strcmp(argv[i], "--limit")) && i + 1 < argc) {
             n = atoi(argv[++i]);
             if (n <= 0) n = 20;
+            n_set = 1;
+        } else if (!strcmp(argv[i], "--server") && i + 1 < argc) {
+            /* 只给 qlog 用：把「哪台 DNS 服务器」的筛选下推到 SQL */
+            qlog_server = argv[++i];
         } else if (!strcmp(argv[i], "--by") && i + 1 < argc) {
             by = argv[++i];
         } else if (!strcmp(argv[i], "--unit") && i + 1 < argc) {
@@ -3300,6 +3424,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "dns"))    rc = cmd_dns(since);
     else if (!strcmp(cmd, "devices")) rc = cmd_devices(since);
     else if (!strcmp(cmd, "servers")) rc = cmd_servers(since);
+    else if (!strcmp(cmd, "qlog"))    rc = cmd_qlog(since, qlog_server, n_set ? n : 200);
     else if (!strcmp(cmd, "client"))   rc = cmd_client(since, client_ip);
     else if (!strcmp(cmd, "detail")) {
         if (!detail_valid(detail_type, detail_key)) {

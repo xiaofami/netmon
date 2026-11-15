@@ -226,10 +226,21 @@ static int emit_entity(sqlite3 *db, const char *type, const char *key,
         sqlite3_finalize(st);
     }
     long long dnsc = 0;
-    st = prep(db, "SELECT COUNT(*) FROM dnsq WHERE ts_ms>=? AND qname=?;");
+    /*
+     * key 也可能是一台 DNS 服务器 —— 服务器榜点进来就是这种。
+     *
+     * 这时 dnsq 该按 server_ip 匹配，而不是按 qname：一个 IP 永远不会出现在
+     * qname 里，老实现因此恒为 0，详情页的 DNS 段永远是空的，看起来就像
+     * 「有统计、没记录」。域名走 qname，其余（host / cidr 键）两个都试。
+     */
+    st = prep(db, is_q
+        ? "SELECT COUNT(*) FROM dnsq WHERE ts_ms>=? AND qname=?;"
+        : "SELECT COUNT(*) FROM dnsq"
+          " WHERE ts_ms>=? AND (qname=? OR server_ip=?);");
     if (st) {
         sqlite3_bind_int64(st, 1, (sqlite3_int64)from);
         sqlite3_bind_text(st, 2, key, -1, SQLITE_TRANSIENT);
+        if (!is_q) sqlite3_bind_text(st, 3, key, -1, SQLITE_TRANSIENT);
         if (sqlite3_step(st) == SQLITE_ROW) dnsc = sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
     }
@@ -395,18 +406,22 @@ static int emit_entity(sqlite3 *db, const char *type, const char *key,
     }
     printf("],");
 
-    /* --- DNS 查询明细 --- */
+    /* --- DNS 查询明细 ---
+       与上面的计数同口径：域名按 qname 匹配，host 键还要认 server_ip ——
+       否则从服务器榜点进来的页面只会有一张空的 DNS 表。 */
     printf("\"dns\":[");
     snprintf(sql, sizeof(sql),
         "SELECT ts_ms,qname,qtype,rcode,ms,COALESCE(%s, answers),"
         "COALESCE(client_ip,''),%s,%s FROM dnsq"
-        " WHERE ts_ms>=? AND qname=? ORDER BY ts_ms DESC LIMIT 60;",
-        DC_ANSWER_IPS, DC_SERVER_IP, DC_TTL);
+        " WHERE ts_ms>=? AND %s ORDER BY ts_ms DESC LIMIT 60;",
+        DC_ANSWER_IPS, DC_SERVER_IP, DC_TTL,
+        is_q ? "qname=?" : "(qname=? OR server_ip=?)");
     st = prep(db, sql);
     row = 0;
     if (st) {
         sqlite3_bind_int64(st, 1, (sqlite3_int64)from);
         sqlite3_bind_text(st, 2, key, -1, SQLITE_TRANSIENT);
+        if (!is_q) sqlite3_bind_text(st, 3, key, -1, SQLITE_TRANSIENT);
         while (sqlite3_step(st) == SQLITE_ROW) {
             const unsigned char *q  = sqlite3_column_text(st, 1);
             const unsigned char *a  = sqlite3_column_text(st, 5);

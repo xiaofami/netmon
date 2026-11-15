@@ -9,6 +9,8 @@
 #   view=client   client --ip X --since Nd         单台设备详情
 #   view=detail   detail --type T --key K --since Nd  通用条目详情
 #                 （T = host / qname / cidr）
+#   view=qlog     qlog -j --server IP --since Nd   某台 DNS 服务器的查询日志
+#                 server 省略时退化为全服务器；-j 必须带，qlog 默认给人看
 #
 # 安全说明：
 #   1) since 只接受纯数字并限制范围，view 只接受字面量；
@@ -69,7 +71,9 @@ else
 fi
 
 VIEW=$(printf '%s' "$QS" | tr '&' '\n' | grep '^view=' | head -1 | cut -d= -f2)
-if [ "$VIEW" != "client" ] && [ "$VIEW" != "detail" ]; then
+# qlog 也要挡在 dashboard 缓存之外：它的输出取决于 server 参数，
+# 混进 dash-*.json 会让总览页读到别人的日志（并发刷新时尤其明显）。
+if [ "$VIEW" != "client" ] && [ "$VIEW" != "detail" ] && [ "$VIEW" != "qlog" ]; then
     mkdir -p "$CACHE_DIR" 2>/dev/null || CACHE_DIR=/tmp
     # busybox 没有 stat 命令，改用「10 秒窗口编号」做文件名：
     # 同一窗口内直接命中，跨窗口自动失效，无需读 mtime。
@@ -97,6 +101,11 @@ DTYPE=$(printf '%s' "$DTYPE" | tr -cd 'a-z' | cut -c1-16)
 DKEY=$(printf '%s' "$QS" | tr '&' '\n' | grep '^key=' | head -1 | cut -d= -f2)
 # 键由前端 encodeURIComponent 编码，保留 % 供后端解码
 DKEY=$(printf '%s' "$DKEY" | tr -cd 'A-Za-z0-9._:%-' | cut -c1-240)
+# DNS 服务器过滤同样先还原 %3A 再走字符白名单；值只作为 --server 的参数，
+# 不拼接执行，后端还会再走一次 sqlite3_bind。
+SRV=$(printf '%s' "$QS" | tr '&' '\n' | grep '^server=' | head -1 | cut -d= -f2)
+SRV=$(printf '%s' "$SRV" | sed 's/%3A/:/g; s/%3a/:/g')
+SRV=$(printf '%s' "$SRV" | tr -cd '0-9a-fA-F.:' | cut -c1-45)
 
 REPORT=/usr/bin/netmon-report
 if [ ! -x "$REPORT" ]; then
@@ -113,6 +122,14 @@ if [ "$VIEW" = "client" ] && [ -n "$IP" ]; then
     OUT=$("$REPORT" client --since "$SINCE_OPT" --ip "$IP" $FAM_OPT 2>/dev/null) || true
 elif [ "$VIEW" = "detail" ] && [ -n "$DTYPE" ] && [ -n "$DKEY" ]; then
     OUT=$("$REPORT" detail --since "$SINCE_OPT" --type "$DTYPE" --key "$DKEY" $FAM_OPT 2>/dev/null) || true
+elif [ "$VIEW" = "qlog" ]; then
+    # 分支写两遍而不是拼参数：busybox ash 里 ${SRV:+--server "$SRV"} 的
+    # 引号不会被重新解析，会把 --server 和地址粘成一个参数。
+    if [ -n "$SRV" ]; then
+        OUT=$("$REPORT" qlog -j --since "$SINCE_OPT" --server "$SRV" $FAM_OPT 2>/dev/null) || true
+    else
+        OUT=$("$REPORT" qlog -j --since "$SINCE_OPT" $FAM_OPT 2>/dev/null) || true
+    fi
 else
     OUT=$("$REPORT" dashboard --since "$SINCE_OPT" $FAM_OPT 2>/dev/null) || true
 fi

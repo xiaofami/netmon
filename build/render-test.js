@@ -357,6 +357,19 @@ const qall = el('queries-body').innerHTML;
 vm.runInNewContext("S.cls='1';S.page.queries=1;renderView();", sandbox);
 check('归因筛选生效', el('queries-body').innerHTML !== qall);
 vm.runInNewContext("S.cls='all';S.qq='';renderView();", sandbox);
+
+console.log('\n== 查询日志：按 DNS 服务器下钻 ==');
+go('#/dns');
+check('服务器榜有可点的行', (el('dns-servers').innerHTML.match(/data-srvgo=/g) || []).length >= 2);
+go('#/queries?server=223.5.5.5');
+check('筛服务器后走 qlog 数据源', has('queries-count', '只看'));
+check('筛服务器后确实有行', (el('queries-body').innerHTML.match(/g-qlog/g) || []).length > 0);
+check('这些行都属于该服务器', has('queries-body', '阿里'));
+check('显式筛选时服务器列不被收起',
+      vm.runInNewContext("document.getElementById('v-queries').classList.contains('no-srv')", sandbox) === false);
+vm.runInNewContext("S.dnsServer='';S.qlog=null;S.qlogKey='';S.page.queries=1;", sandbox);
+go('#/queries');
+check('取消筛选后退回全局日志', has('queries-count', '最近记录'));
 go('#/clients');
 vm.runInNewContext("S.csort='name';renderView();", sandbox);
 check('按名称排序可渲染', has('clients-grid', 'dcard'));

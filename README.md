@@ -355,6 +355,7 @@ logread -e netmon | grep -v 'daemon\.info' # 排除正常信息
 netmon-report status                       # 库概况
 netmon-report devices --since 24h          # 设备清单
 netmon-report servers --since 24h          # DNS 服务器：查询量 / 平均耗时
+netmon-report qlog --since 24h --server 192.0.2.53   # 某台 DNS 服务器的查询明细
 netmon-report dns --since 24h --fam 6      # 只看 IPv6 客户端的 DNS 质量
 netmon-report client --ip 192.168.1.100    # 单台设备详情
 netmon-report detail --type qname --key example.com
@@ -365,6 +366,12 @@ netmon-report cleanup-self --dry-run       # 清历史里的本机地址记录�
 全部支持 `--since 1h|24h|7d` 与 `-j`（JSON）。`top / trend / dns / devices`
 还支持 `--fam 4|6|all`（默认 all）；`dashboard` 接受该参数但始终返回全量数据，
 分栈信息看 `stack` 字段。
+
+`qlog` 是给「某台 DNS 服务器到底查了什么」用的：`dashboard` 里的 `dns_recent`
+只有全局最近 200 条，外部解析器在总量里通常只占几个百分点，200 条里往往一条
+都不属于它 —— 所以页面点服务器榜下钻时走的不是那份数据，而是这条命令
+（`--server` 把筛选下推到 SQL，命中 `idx_dnsq_server`）。省略 `--server`
+就是全服务器的最近查询。
 
 ---
 

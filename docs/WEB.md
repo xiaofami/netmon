@@ -117,7 +117,7 @@ netstat -tlnp | grep 8090
 | `#/blocks` | 拦截记录 | `block_stats` / `hp` |
 | `#/traffic` | 流量排行 | `top_cidr` / `top_host` / `traffic_hosts` / `devices` |
 | `#/dns` | DNS 解析 | `dns_servers` / `stack` / `dns_recent` |
-| `#/queries` | 查询日志 | `dns_recent` |
+| `#/queries` | 查询日志 | `dns_recent`；选了某台服务器时改走 `qlog` 接口 |
 | `#/domains` | 域名排行 | `dns` / `top_host` |
 | `#/system` | 系统信息 | `sysinfo` / `daily` / `summary` |
 | `#/detail/<type>/<key>` | 条目详情 | `detail` 接口（`host` / `qname` / `cidr`） |
@@ -283,7 +283,7 @@ Quad9 / 百度，含 IPv6 地址）→ 对应名称；私有 / ULA / link-local 
 | `dns` | 域名解析质量榜，每行 `q, n, replied, noerror, nx, ref, ms, ms_max, cls, rule` |
 | `devices` | 设备全量，见下表 |
 | `dns_timeline` | DNS 小时曲线，每行 `t, n, blocked, ms` |
-| `dns_recent` | 最近 200 条查询，见下表 |
+| `dns_recent` | 最近 200 条查询，见下表。**只用于「全部服务器」视图**：它是全局最近 200 条，不是按服务器筛的 |
 | `sysinfo` | 系统状态，见下表 |
 | `daily` | 每日流量总量，每行 `t, out, in, conns` |
 | `traffic_hosts` | 目标流量榜，每行 `k, conns, out, in, bytes, fam` |
@@ -365,6 +365,23 @@ Quad9 / 百度，含 IPv6 地址）→ 对应名称；私有 / ULA / link-local 
 `traffic[]` 每行新增 `fam`；`recent[]` 的 `answers` 语义同 `dns_recent`，
 并带 `server` / `server_label` / `server_fam` / `ttl` / `answer_cnt`。
 
+### qlog（按服务器筛的查询日志）
+
+顶层：`since_ms`、`server`（空串 = 全部服务器）、`n`（行数）、`rows[]`。
+`rows[]` 的字段与 `dns_recent[]` 完全一致（同一个输出函数），前端直接复用
+`renderQueries()`。
+
+```bash
+# 页面在「查询日志」里选中某台服务器时，前端发的就是这一条
+curl -s 'http://router/cgi-bin/data?view=qlog&server=192.0.2.53&since=86400'
+```
+
+**为什么不复用 `dns_recent`：** 那是全局最近 200 条，再在前端按服务器筛。
+服务器榜却是整时段聚合，两个窗口差着数量级 —— 外部解析器在 24 小时里通常只占
+几个百分点，200 条里常常一条都不属于它，于是「榜上几千次、点进去空白」。
+qlog 把筛选下推到 SQL（命中 `idx_dnsq_server`），与榜上的数字同源。
+`server` 省略时不加条件，返回全服务器的最近查询。
+
 ### detail（条目详情）
 
 顶层：`type`、`key`、`title`、`since_ms`、`summary`、`devices`、`timeline`、
@@ -374,6 +391,11 @@ Quad9 / 百度，含 IPv6 地址）→ 对应名称；私有 / ULA / link-local 
 |---|---|
 | `conns[]` | `fam`、`client_ip`（LAN 侧地址） |
 | `dns[]` | `server`、`server_label`、`ttl`；`answers` 归一规则同上 |
+
+`type=host` 的 `key` 可以是一台 DNS 服务器（从服务器榜点进来就是）。
+这时 `summary.dns` 与 `dns[]` 按 `server_ip` 匹配 —— 一个 IP 永远不会出现在
+`qname` 里，只按 `qname` 匹配的话两者恒为 0，页面就成了「有统计、没明细」。
+`type=qname` 不受影响，仍然只按域名匹配。
 
 ### 字段约定
 
